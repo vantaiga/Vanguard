@@ -1,13 +1,6 @@
-// X7 PROTOCOL — SCANNER
-// Three protocols, four chains, one unified priority queue
-// WebSocket for real-time events + 30s polling for at-risk positions
-// 10-block chunks for Alchemy free tier compliance
-// Tier-1 queue: HF < 0.95 (100% close factor) — executed first
-// Tier-2 queue: HF 0.95-1.0 (50% close factor) — executed second
-
 import { createPublicClient, http } from 'viem'
 import { CHAINS, ACTIVE_CHAINS, TOPICS } from './config.js'
-import { upsertBorrower, getAtRisk, setConfig, getConfig } from './db.js'
+import { upsertBorrower, getAtRisk, setConfig } from './db.js'
 import WebSocket from 'ws'
 
 const POOL_ABI = [
@@ -46,11 +39,6 @@ const DATA_ABI = [
   }
 ]
 
-const COMPOUND_ABI = [
-  { name:'isLiquidatable', type:'function', stateMutability:'view',
-    inputs:[{name:'account',type:'address'}], outputs:[{name:'',type:'bool'}] }
-]
-
 const BORROW_EVENT = {
   name:'Borrow', type:'event',
   inputs:[
@@ -65,16 +53,15 @@ const BORROW_EVENT = {
 }
 
 const _clients = {}
-function client(chainName) {
+function getClient(chainName) {
   if (!_clients[chainName])
     _clients[chainName] = createPublicClient({ transport: http(CHAINS[chainName].rpcHttp) })
   return _clients[chainName]
 }
 
-// Check Aave health factor — updates DB
 export async function checkAaveHF(chainName, address) {
   try {
-    const r = await client(chainName).readContract({
+    const r = await getClient(chainName).readContract({
       address: CHAINS[chainName].aavePool, abi: POOL_ABI,
       functionName: 'getUserAccountData', args: [address]
     })
@@ -82,16 +69,15 @@ export async function checkAaveHF(chainName, address) {
     const coll = Number(r[0]) / 1e8
     const debt = Number(r[1]) / 1e8
     upsertBorrower(address, chainName, 'aave', hf, coll, debt)
-    return { hf, coll, debt, liq: hf > 0 && hf < 1.0, tier1: hf > 0 && hf < 0.95 }
+    return { hf, coll, debt, liq: hf>0&&hf<1.0, tier1: hf>0&&hf<0.95 }
   } catch { return null }
 }
 
-// Get Aave user reserves for executor params
 export async function getAaveReserves(chainName, address) {
   try {
-    const chain   = CHAINS[chainName]
-    const c       = client(chainName)
-    const tokens  = await c.readContract({
+    const chain  = CHAINS[chainName]
+    const c      = getClient(chainName)
+    const tokens = await c.readContract({
       address: chain.aaveData, abi: DATA_ABI,
       functionName: 'getAllReservesTokens', args: []
     })
@@ -100,14 +86,13 @@ export async function getAaveReserves(chainName, address) {
       try {
         const d = await c.readContract({
           address: chain.aaveData, abi: DATA_ABI,
-          functionName: 'getUserReserveData',
-          args: [t.tokenAddress, address]
+          functionName: 'getUserReserveData', args: [t.tokenAddress, address]
         })
         out.push({
           asset: t.tokenAddress, symbol: t.symbol,
-          aTokenBalance:        d[0],
-          variableDebt:         d[2],
-          collateralEnabled:    d[8]
+          aTokenBalance:     d[0],
+          variableDebt:      d[2],
+          collateralEnabled: d[8]
         })
       } catch {}
     }
@@ -115,32 +100,29 @@ export async function getAaveReserves(chainName, address) {
   } catch { return null }
 }
 
-// Seed borrowers from recent blocks — 10-block chunks for free Alchemy
 async function seedFromBlocks(chainName) {
   try {
-    const c      = client(chainName)
+    const c      = getClient(chainName)
     const latest = await c.getBlockNumber()
-    const total  = 50n
-    let   from   = latest - total
+    let   from   = latest - 50n
     const addrs  = new Set()
     while (from < latest) {
       const to = from + 9n > latest ? latest : from + 9n
       try {
         const logs = await c.getLogs({
-          address:   CHAINS[chainName].aavePool,
-          event:     BORROW_EVENT, fromBlock: from, toBlock: to
+          address: CHAINS[chainName].aavePool,
+          event:   BORROW_EVENT, fromBlock: from, toBlock: to
         })
-        logs.forEach(l => { const a = l.args.onBehalfOf||l.args.user; if(a) addrs.add(a) })
+        logs.forEach(l => { const a=l.args.onBehalfOf||l.args.user; if(a) addrs.add(a) })
       } catch {}
       from = to + 1n
       await new Promise(r => setTimeout(r, 250))
     }
     addrs.forEach(a => upsertBorrower(a, chainName, 'aave', 999))
-    console.log(`[${chainName.toUpperCase()}] Seeded ${addrs.size} borrowers`)
+    console.log('['+chainName.toUpperCase()+'] Seeded '+addrs.size+' borrowers')
   } catch {}
 }
 
-// WebSocket: real-time event listener
 const _ws = {}
 function startWS(chainName, onLiq) {
   const chain = CHAINS[chainName]
@@ -149,12 +131,12 @@ function startWS(chainName, onLiq) {
       const ws = new WebSocket(chain.rpcWss)
       _ws[chainName] = ws
       ws.on('open', () => {
-        setConfig(`ws_${chainName}`, 'connected')
-        console.log(`[${chainName.toUpperCase()}] WebSocket connected`)
+        setConfig('ws_'+chainName, 'connected')
+        console.log('['+chainName.toUpperCase()+'] WebSocket connected')
         ws.send(JSON.stringify({ jsonrpc:'2.0',id:1,method:'eth_subscribe',
-          params:['logs',{ address: chain.aavePool, topics: [TOPICS.LIQUIDATION] }] }))
+          params:['logs',{ address:chain.aavePool, topics:[TOPICS.LIQUIDATION] }] }))
         ws.send(JSON.stringify({ jsonrpc:'2.0',id:2,method:'eth_subscribe',
-          params:['logs',{ address: chain.aavePool, topics: [TOPICS.BORROW] }] }))
+          params:['logs',{ address:chain.aavePool, topics:[TOPICS.BORROW] }] }))
       })
       ws.on('message', async raw => {
         try {
@@ -162,22 +144,22 @@ function startWS(chainName, onLiq) {
           if (!msg.params?.result) return
           const log = msg.params.result
           if (!log.topics?.[0]) return
-          if (log.topics[0] === TOPICS.LIQUIDATION) {
-            const borrower = '0x' + log.topics[3]?.slice(26)
-            if (borrower?.length === 42) {
+          if (log.topics[0]===TOPICS.LIQUIDATION) {
+            const borrower='0x'+log.topics[3]?.slice(26)
+            if (borrower?.length===42) {
               const r = await checkAaveHF(chainName, borrower)
               if (r?.liq && onLiq) onLiq({ chainName, borrower, protocol:'aave', ...r })
             }
           }
-          if (log.topics[0] === TOPICS.BORROW) {
-            const borrower = '0x' + log.topics[2]?.slice(26)
-            if (borrower?.length === 42) upsertBorrower(borrower, chainName, 'aave', 999)
+          if (log.topics[0]===TOPICS.BORROW) {
+            const borrower='0x'+log.topics[2]?.slice(26)
+            if (borrower?.length===42) upsertBorrower(borrower, chainName, 'aave', 999)
           }
         } catch {}
       })
       ws.on('error', () => {})
       ws.on('close', () => {
-        setConfig(`ws_${chainName}`, 'reconnecting')
+        setConfig('ws_'+chainName, 'reconnecting')
         setTimeout(connect, 5000)
       })
     } catch { setTimeout(connect, 10000) }
@@ -185,17 +167,14 @@ function startWS(chainName, onLiq) {
   connect()
 }
 
-// Polling scanner: checks at-risk positions every 30s
-function startPoller(chainName, protocol, onLiq) {
+function startPoller(chainName, onLiq) {
   async function scan() {
-    const atRisk = getAtRisk(chainName, protocol)
+    const atRisk = getAtRisk(chainName, 'aave')
     if (atRisk.length > 0)
-      console.log(`[${chainName.toUpperCase()}] Scanning ${atRisk.length} ${protocol} positions`)
+      console.log('['+chainName.toUpperCase()+'] Scanning '+atRisk.length+' positions')
     for (const pos of atRisk) {
-      if (protocol === 'aave') {
-        const r = await checkAaveHF(chainName, pos.address)
-        if (r?.liq && onLiq) onLiq({ chainName, borrower: pos.address, protocol, ...r })
-      }
+      const r = await checkAaveHF(chainName, pos.address)
+      if (r?.liq && onLiq) onLiq({ chainName, borrower:pos.address, protocol:'aave', ...r })
       await new Promise(r => setTimeout(r, 200))
     }
   }
@@ -203,14 +182,15 @@ function startPoller(chainName, protocol, onLiq) {
   setInterval(scan, 30000)
 }
 
-export function startScanner(onLiquidatable) {
+// startScanner is now a regular async function — no await inside sync for loop
+export async function startScanner(onLiquidatable) {
   for (const chainName of ACTIVE_CHAINS) {
     const chain = CHAINS[chainName]
-    if (chain.aavePool) {
+    if (chain && chain.aavePool) {
       seedFromBlocks(chainName).catch(() => {})
       startWS(chainName, onLiquidatable)
-      startPoller(chainName, 'aave', onLiquidatable)
-      console.log(`[${chainName.toUpperCase()}] Aave scanner started`)
+      startPoller(chainName, onLiquidatable)
+      console.log('['+chainName.toUpperCase()+'] Scanner started')
     }
     await new Promise(r => setTimeout(r, 600))
   }
