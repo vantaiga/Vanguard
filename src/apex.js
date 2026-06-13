@@ -14,11 +14,11 @@ export async function getDirection() {
     const r = await _client.messages.create({
       model: 'claude-haiku-4-5', max_tokens: 150,
       messages: [{ role:'user', content:
-        `X7 liquidation bot. Revenue: $${getTotalRevenue().toFixed(0)} total. ` +
-        `Market: ${getConfig('market_volatility')||'moderate'}. ` +
-        `Polygon WR: ${getConfig('wr_polygon_aave')||'0.4'}. ` +
-        `Arbitrum WR: ${getConfig('wr_arbitrum_aave')||'0.4'}. ` +
-        `Reply ONLY JSON: {"priorityChain":"polygon","insight":"one sentence","action":"one action"}`
+        'X7 liquidation bot. Revenue: $'+getTotalRevenue().toFixed(0)+' total. ' +
+        'Market: '+(getConfig('market_volatility')||'moderate')+'. ' +
+        'Polygon WR: '+(getConfig('wr_polygon_aave')||'0.4')+'. ' +
+        'Arbitrum WR: '+(getConfig('wr_arbitrum_aave')||'0.4')+'. ' +
+        'Reply ONLY JSON: {"priorityChain":"polygon","insight":"one sentence","action":"one action"}'
       }]
     })
     const m = r.content[0].text.match(/\{[\s\S]*\}/)
@@ -33,21 +33,25 @@ export async function getDirection() {
 }
 
 export async function startApex() {
-  setInterval(async () => {
+  async function cycle() {
     try {
       await getDirection()
-      // Fetch prices
       const r = await fetch(
-        'https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin,matic-network,chainlink&vs_currencies=usd'
+        'https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin,matic-network,chainlink,avalanche-2&vs_currencies=usd'
       )
       const d = await r.json()
       setConfig('prices', JSON.stringify({
-        ETH: d['ethereum']?.usd||3000, BTC: d['bitcoin']?.usd||60000,
-        MATIC: d['matic-network']?.usd||0.8, LINK: d['chainlink']?.usd||15,
-        USDC:1, DAI:1, USDT:1, WBTC: d['bitcoin']?.usd||60000
+        ETH:   d['ethereum']?.usd     || 3000,
+        BTC:   d['bitcoin']?.usd      || 60000,
+        MATIC: d['matic-network']?.usd || 0.8,
+        LINK:  d['chainlink']?.usd    || 15,
+        AVAX:  d['avalanche-2']?.usd  || 30,
+        USDC:1, DAI:1, USDT:1,
+        WBTC:  d['bitcoin']?.usd      || 60000
       }))
     } catch {}
-  }, 60000)
-  await getDirection().catch(()=>{})
+  }
+  setInterval(cycle, 60000)
+  await cycle()
   console.log('[APEX] Started')
 }
