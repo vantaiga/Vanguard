@@ -1,7 +1,7 @@
 // X7 PROTOCOL — PIMLICO
-// Verifying paymaster — Pimlico free credits pay all gas
-// Zero MATIC, zero ETH, zero AVAX, zero USDC needed ever
-// entryPoint v0.7 — matches permissionless latest
+// Verifying paymaster — Pimlico pays gas from 10M free credits
+// No paymasterContext = verifying paymaster (NOT ERC-20)
+// Zero MATIC, zero ETH, zero USDC needed
 
 import { createPublicClient, createWalletClient, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -14,13 +14,9 @@ import { CHAINS, EXEC_KEY } from './config.js'
 import { getConfig, setConfig } from './db.js'
 
 const VIEM_CHAINS = { polygon, arbitrum, ethereum: mainnet, avalanche }
+const _pub = {}, _wal = {}, _smart = {}, _addrs = {}
 
-// Cache
-const _pub   = {}
-const _smart = {}
-const _addrs = {}
-
-function account() {
+function getAccount() {
   if (!EXEC_KEY) throw new Error('EXECUTOR_PRIVATE_KEY not set')
   const k = EXEC_KEY.startsWith('0x') ? EXEC_KEY : '0x' + EXEC_KEY
   return privateKeyToAccount(k)
@@ -37,117 +33,32 @@ export function getPublicClient(chainName) {
 }
 
 export function getWalletClient(chainName) {
-  return createWalletClient({
-    account:   account(),
-    chain:     VIEM_CHAINS[chainName],
-    transport: http(CHAINS[chainName].rpcHttp)
-  })
+  if (!_wal[chainName]) {
+    _wal[chainName] = createWalletClient({
+      account:   getAccount(),
+      chain:     VIEM_CHAINS[chainName],
+      transport: http(CHAINS[chainName].rpcHttp)
+    })
+  }
+  return _wal[chainName]
 }
 
-async function buildSmartClient(chainName) {
-  const chain = CHAINS[chainName]
+async function getSmartClient(chainName) {
+  if (_smart[chainName]) return _smart[chainName]
 
+  const chain = CHAINS[chainName]
   if (!chain?.pimlico || chain.pimlico.endsWith('apikey=')) {
-    console.log('[PIMLICO] ' + chainName + ': no API key — skipping smart account')
+    console.log('[PIMLICO] ' + chainName + ': no API key')
     return null
   }
-
-  const pub = getPublicClient(chainName)
-
-  // Create smart account owned by executor private key
-  const smartAccount = await toSimpleSmartAccount({
-    client:     pub,
-    owner:      account(),
-    entryPoint: { address: entryPoint07Address, version: '0.7' }
-  })
-
-  _addrs[chainName] = smartAccount.address
-  setConfig('smart_addr_' + chainName, smartAccount.address)
-  console.log('[PIMLICO] ' + chainName + ' smart account: ' + smartAccount.address)
-
-  // Pimlico bundler + verifying paymaster
-  // Pimlico pays gas from your 10M free credits — nothing deducted from wallets
-  const pimlico = createPimlicoClient({
-    transport:  http(chain.pimlico),
-    chain:      VIEM_CHAINS[chainName],
-    entryPoint: { address: entryPoint07Address, version: '0.7' }
-  })
-
-  const smartClient = createSmartAccountClient({
-    account:          smartAccount,
-    chain:            VIEM_CHAINS[chainName],
-    bundlerTransport: http(chain.pimlico),
-    paymaster:        pimlico
-    // No paymasterContext = verifying paymaster (free credits)
-    // To switch to ERC-20 USDC gas after credits expire, add:
-    // paymasterContext: { token: chain.usdc }
-  })
-
-  return smartClient
-}
-
-async function getSmartClient(chainName) {
-  if (_smart[chainName]) return _smart[chainName]
-  try {
-    const client = await buildSmartClient(chainName)
-    if (client) _smart[chainName] = client
-    return client
-  } catch (e) {
-    console.log('[PIMLICO] ' + chainName + ' init error: ' + e.message?.slice(0, 120))
-    return null
-  }
-}
-
-// Main send function — Pimlico free credits cover gas
-// to must ALWAYS be a real address (never null)
-// Contract deployment goes via CREATE2 factory in deployer.js
-export async function sendViaPimlico(chainName, to, data, value = 0n) {
-  if (!to) {
-    throw new Error('[PIMLICO] to address is null — use CREATE2 factory for contract deployment')
-  }
-
-  const client = await getSmartClient(chainName)
-
-  if (client) {
-    try {
-      const hash = await client.sendTransaction({ to, data, value })
-      console.log('[PIMLICO] ' + chainName + ': sent → ' + hash)
-      return hash
-    } catch (e) {
-      console.log('[PIMLICO] ' + chainName + ' send failed: ' + e.message?.slice(0, 120))
-      throw e
-    }
-  }
-
-  // No smart client — chain not configured for Pimlico
-  throw new Error('[PIMLICO] ' + chainName + ': no smart client available')
-}
-
-export function getExecutorAddress() {
-  try { return account().address } catch { return null }
-}
-
-export async function getSmartAddress(chainName) {
-  if (_addrs[chainName]) return _addrs[chainName]
-  const cached = getConfig('smart_addr_' + chainName)
-  if (cached) { _addrs[chainName] = cached; return cached }
-  await getSmartClient(chainName).catch(() => {})
-  return _addrs[chainName] || null
-      }  return _wal[chainName]
-}
-
-async function getSmartClient(chainName) {
-  if (_smart[chainName]) return _smart[chainName]
-  const chain = CHAINS[chainName]
-  if (!chain?.pimlico || chain.pimlico.endsWith('apikey=')) return null
 
   try {
     const pub = getPublicClient(chainName)
 
-    // Smart account owned by executor key — deterministic address
+    // Deterministic smart account from executor private key
     const smartAccount = await toSimpleSmartAccount({
       client:     pub,
-      owner:      account(),
+      owner:      getAccount(),
       entryPoint: { address: entryPoint07Address, version: '0.7' }
     })
 
@@ -155,46 +66,51 @@ async function getSmartClient(chainName) {
     setConfig('smart_addr_' + chainName, smartAccount.address)
     console.log('[PIMLICO] ' + chainName + ' smart account: ' + smartAccount.address)
 
-    // Pimlico bundler + paymaster client
-    const pimlico = createPimlicoClient({
+    // Pimlico handles both bundler and paymaster
+    const pimlicoClient = createPimlicoClient({
       transport:  http(chain.pimlico),
       chain:      VIEM_CHAINS[chainName],
       entryPoint: { address: entryPoint07Address, version: '0.7' }
     })
 
-    // VERIFYING PAYMASTER — Pimlico pays from your free credits
-    // No USDC, no MATIC, no ETH needed in any wallet
+    // VERIFYING PAYMASTER — no paymasterContext = Pimlico pays from free credits
+    // This is the key difference from ERC-20 paymaster
+    // Your 10M credits sponsor every gas payment
     const smartClient = createSmartAccountClient({
       account:          smartAccount,
       chain:            VIEM_CHAINS[chainName],
       bundlerTransport: http(chain.pimlico),
-      paymaster:        pimlico
-      // No paymasterContext = verifying paymaster (free credits)
-      // Add paymasterContext: { token: chain.usdc } after first profits arrive
+      paymaster:        pimlicoClient
+      // NO paymasterContext here = verifying paymaster = free credits
     })
 
     _smart[chainName] = smartClient
     return smartClient
+
   } catch (e) {
-    console.log('[PIMLICO] ' + chainName + ' init failed: ' + e.message?.slice(0, 100))
+    console.log('[PIMLICO] ' + chainName + ' smart client error: ' + e.message?.slice(0, 150))
     return null
   }
 }
 
-// Send via Pimlico verifying paymaster — Pimlico pays gas free
-// Falls back to direct EOA only if Pimlico unavailable
+// Main function called by deployer.js, executor.js, yield.js
+// Pimlico verifying paymaster pays gas — zero native tokens ever needed
 export async function sendViaPimlico(chainName, to, data, value = 0n) {
   try {
     const client = await getSmartClient(chainName)
     if (client) {
+      // to=null would fail — CREATE2 factory provides real address
+      if (!to) throw new Error('to address required for UserOp — use CREATE2 factory')
       const hash = await client.sendTransaction({ to, data, value })
-      console.log('[PIMLICO] ' + chainName + ': tx sent → ' + hash)
+      console.log('[PIMLICO] ' + chainName + ': UserOp sent → ' + hash)
       return hash
     }
   } catch (e) {
-    console.log('[PIMLICO] ' + chainName + ': ' + e.message?.slice(0, 120))
+    console.log('[PIMLICO] ' + chainName + ' error: ' + e.message?.slice(0, 150))
   }
-  // Fallback — direct EOA (needs native gas)
+
+  // Direct EOA fallback — only if Pimlico completely unavailable
+  console.log('[PIMLICO] ' + chainName + ': falling back to direct EOA (needs native gas)')
   return sendDirect(chainName, to, data, value)
 }
 
@@ -207,7 +123,7 @@ async function sendDirect(chainName, to, data, value = 0n) {
 }
 
 export function getExecutorAddress() {
-  try { return account().address } catch { return null }
+  try { return getAccount().address } catch { return null }
 }
 
 export async function getSmartAddress(chainName) {
