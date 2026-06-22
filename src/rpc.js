@@ -1,238 +1,142 @@
-// X7-SV — 6-TIER RPC ROUTER
-// Never rate-limited — automatic failover in < 1ms
-// Dual WebSocket per chain — zero missed events
-// Solves the Alchemy 429 problem permanently
+// X7-SV · rpc.js — 6-tier RPC router · tiered WebSocket by chain tier
 
 import WebSocket from 'ws'
+import { getChain } from './chains.js'
 
-// ─── RPC TIERS PER CHAIN ──────────────────────────────────────────────────────
-
-const FREE_RPCS = {
-  ethereum:  ['https://eth.llamarpc.com', 'https://rpc.ankr.com/eth',    'https://ethereum.publicnode.com'],
-  arbitrum:  ['https://arb1.arbitrum.io/rpc', 'https://rpc.ankr.com/arbitrum', 'https://arbitrum.publicnode.com'],
-  polygon:   ['https://polygon.llamarpc.com', 'https://rpc.ankr.com/polygon',  'https://polygon.publicnode.com'],
-  base:      ['https://mainnet.base.org', 'https://rpc.ankr.com/base',         'https://base.publicnode.com'],
-  optimism:  ['https://mainnet.optimism.io', 'https://rpc.ankr.com/optimism',  'https://optimism.publicnode.com'],
-  avalanche: ['https://api.avax.network/ext/bc/C/rpc', 'https://rpc.ankr.com/avalanche', 'https://avalanche.publicnode.com'],
-  bnb:       ['https://bsc-dataseed.bnbchain.org', 'https://rpc.ankr.com/bsc', 'https://bsc.publicnode.com'],
-  scroll:    ['https://rpc.scroll.io', 'https://rpc.ankr.com/scroll']
+// Free public RPC fallbacks
+const FREE = {
+  ethereum:  ['https://eth.llamarpc.com','https://rpc.ankr.com/eth','https://ethereum.publicnode.com'],
+  arbitrum:  ['https://arb1.arbitrum.io/rpc','https://rpc.ankr.com/arbitrum','https://arbitrum.publicnode.com'],
+  polygon:   ['https://polygon.llamarpc.com','https://rpc.ankr.com/polygon','https://polygon.publicnode.com'],
+  base:      ['https://mainnet.base.org','https://rpc.ankr.com/base','https://base.publicnode.com'],
+  optimism:  ['https://mainnet.optimism.io','https://rpc.ankr.com/optimism','https://optimism.publicnode.com'],
+  avalanche: ['https://api.avax.network/ext/bc/C/rpc','https://rpc.ankr.com/avalanche'],
+  bnb:       ['https://bsc-dataseed.bnbchain.org','https://rpc.ankr.com/bsc','https://bsc.publicnode.com'],
+  scroll:    ['https://rpc.scroll.io','https://rpc.ankr.com/scroll'],
 }
 
 const FREE_WSS = {
-  ethereum:  ['wss://eth.llamarpc.com',      'wss://ethereum.publicnode.com'],
-  arbitrum:  ['wss://arb1.arbitrum.io/ws',   'wss://arbitrum.publicnode.com'],
-  polygon:   ['wss://polygon.llamarpc.com',  'wss://polygon.publicnode.com'],
-  base:      ['wss://mainnet.base.org',      'wss://base.publicnode.com'],
-  optimism:  ['wss://mainnet.optimism.io',   'wss://optimism.publicnode.com'],
-  avalanche: ['wss://api.avax.network/ext/bc/C/ws', 'wss://avalanche.publicnode.com'],
-  bnb:       ['wss://bsc-ws-node.nariox.org'],
-  scroll:    ['wss://wss-rpc.scroll.io/ws']
+  ethereum:  ['wss://eth.llamarpc.com','wss://ethereum.publicnode.com'],
+  arbitrum:  ['wss://arbitrum.publicnode.com'],
+  polygon:   ['wss://polygon.llamarpc.com','wss://polygon.publicnode.com'],
+  base:      ['wss://base.publicnode.com'],
+  optimism:  ['wss://optimism.publicnode.com'],
+  avalanche: ['wss://api.avax.network/ext/bc/C/ws'],
+  bnb:       ['wss://bsc.publicnode.com'],
+  scroll:    ['wss://wss-rpc.scroll.io/ws'],
 }
 
-// ─── RPC ROUTER CLASS ─────────────────────────────────────────────────────────
+// Connections per tier: Tier1=3 WS, Tier2=2 WS, Tier3=1 WS
+const TIER_WS = { 1: 3, 2: 2, 3: 1 }
 
 class RPCRouter {
-  constructor(chainName, primaryHttp, primaryWss) {
-    this.chain     = chainName
-    this.providers = [
-      primaryHttp,
-      ...(FREE_RPCS[chainName] || [])
-    ].filter(Boolean)
-    this.current  = 0
-    this.cooldown = {} // provider → timestamp when it can be used again
-    this.stats    = {} // provider → {success, fail, latency}
+  constructor(chainName, primaryHttp) {
+    this.chain = chainName
+    this.providers = [primaryHttp, ...(FREE[chainName] || [])].filter(Boolean)
+    this.idx = 0
+    this.cooldown = {}
   }
 
-  isAvailable(idx) {
-    const cd = this.cooldown[idx] || 0
-    return Date.now() > cd
-  }
-
-  markFailed(idx, cooldownMs = 60000) {
-    this.cooldown[idx] = Date.now() + cooldownMs
-    const f = this.stats[idx] = this.stats[idx] || { success:0, fail:0 }
-    f.fail++
-  }
-
-  markSuccess(idx) {
-    const s = this.stats[idx] = this.stats[idx] || { success:0, fail:0 }
-    s.success++
-  }
+  avail(i) { return Date.now() > (this.cooldown[i] || 0) }
 
   async call(method, params = []) {
     for (let i = 0; i < this.providers.length; i++) {
-      const idx = (this.current + i) % this.providers.length
-      if (!this.isAvailable(idx)) continue
-      const url = this.providers[idx]
-
+      const n = (this.idx + i) % this.providers.length
+      if (!this.avail(n)) continue
       try {
-        const t   = Date.now()
-        const res = await fetch(url, {
+        const r = await fetch(this.providers[n], {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc:'2.0', id:1, method, params }),
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
           signal: AbortSignal.timeout(8000)
         })
-
-        if (res.status === 429) {
-          this.markFailed(idx, 60000) // 1 minute cooldown
-          continue
-        }
-        if (!res.ok) {
-          this.markFailed(idx, 10000)
-          continue
-        }
-
-        const data = await res.json()
-        if (data.error) {
-          if (data.error.code === -32005) { // Rate limit
-            this.markFailed(idx, 60000)
-            continue
-          }
-          throw new Error(data.error.message || 'RPC error')
-        }
-
-        this.markSuccess(idx)
-        this.current = idx // Stay on working provider
-        return data.result
+        if (r.status === 429) { this.cooldown[n] = Date.now() + 60000; continue }
+        if (!r.ok) { this.cooldown[n] = Date.now() + 10000; continue }
+        const d = await r.json()
+        if (d.error?.code === -32005) { this.cooldown[n] = Date.now() + 60000; continue }
+        if (d.error) throw new Error(d.error.message)
+        this.idx = n
+        return d.result
       } catch (e) {
-        if (e.name === 'AbortError') {
-          this.markFailed(idx, 30000)
-          continue
+        if (e.name === 'AbortError' || e.message?.includes('429')) {
+          this.cooldown[n] = Date.now() + 30000; continue
         }
-        if (e.message?.includes('429') || e.message?.includes('rate')) {
-          this.markFailed(idx, 60000)
-          continue
-        }
-        this.markFailed(idx, 10000)
+        this.cooldown[n] = Date.now() + 10000
       }
     }
-    throw new Error('[RPC:' + this.chain + '] All ' + this.providers.length + ' providers exhausted')
-  }
-
-  getStatus() {
-    return {
-      chain: this.chain,
-      active: this.providers[this.current],
-      available: this.providers.filter((_, i) => this.isAvailable(i)).length,
-      total: this.providers.length,
-      stats: this.stats
-    }
+    throw new Error(`[RPC:${this.chain}] All providers exhausted`)
   }
 }
 
-// ─── DUAL WEBSOCKET PER CHAIN ────────────────────────────────────────────────
-// Two WebSocket connections — fastest response wins
-
-class DualWebSocket {
-  constructor(chainName, primaryWss, chain) {
-    this.chain     = chainName
-    this.endpoints = [primaryWss, ...(FREE_WSS[chainName] || [])].filter(Boolean).slice(0, 3)
-    this.sockets   = []
-    this.seen      = new Set() // Dedup by txHash+blockNumber
-    this.handlers  = {}
-    this.subIds    = {}
-    this.maxSeen   = 10000
+class ChainWS {
+  constructor(chainName, tier) {
+    this.chain = chainName
+    this.maxConns = TIER_WS[tier] || 1
+    this.sockets = []
+    this.handlers = {}
+    this.seen = new Set()
+    this.subs = []
   }
 
-  isDuplicate(key) {
+  dedup(key) {
     if (this.seen.has(key)) return true
     this.seen.add(key)
-    if (this.seen.size > this.maxSeen) {
-      const first = this.seen.values().next().value
-      this.seen.delete(first)
-    }
+    if (this.seen.size > 5000) this.seen.delete(this.seen.values().next().value)
     return false
   }
 
-  on(event, handler) {
-    this.handlers[event] = handler
-    return this
-  }
+  on(evt, fn) { this.handlers[evt] = fn; return this }
 
-  connect(endpointIdx = 0) {
-    const url = this.endpoints[endpointIdx]
+  connect(url, idx) {
     if (!url) return
-
     try {
       const ws = new WebSocket(url)
-      this.sockets[endpointIdx] = ws
-
+      this.sockets[idx] = ws
       ws.on('open', () => {
-        // Subscribe to swap events for all watched pools
-        const subs = this.pendingSubs || []
-        subs.forEach(sub => ws.send(JSON.stringify(sub)))
-        this.handlers['connected']?.(endpointIdx)
+        this.subs.forEach(s => ws.send(JSON.stringify(s)))
+        this.handlers.connected?.(idx)
       })
-
-      ws.on('message', (raw) => {
+      ws.on('message', raw => {
         try {
-          const msg  = JSON.parse(raw.toString())
-          const log  = msg.params?.result
+          const msg = JSON.parse(raw.toString())
+          const log = msg.params?.result
           if (!log) return
-
-          // Deduplication key
-          const key = (log.transactionHash || '') + (log.blockNumber || '') + (log.logIndex || '')
-          if (key && this.isDuplicate(key)) return
-
-          this.handlers['log']?.(log, endpointIdx)
+          const key = (log.transactionHash || '') + (log.logIndex || '') + (log.blockNumber || '')
+          if (key && this.dedup(key)) return
+          this.handlers.log?.(log, idx)
         } catch {}
       })
-
       ws.on('error', () => {})
-      ws.on('close', () => {
-        setTimeout(() => this.connect(endpointIdx), 2000 + endpointIdx * 1000)
-      })
-    } catch { setTimeout(() => this.connect(endpointIdx), 5000) }
+      ws.on('close', () => setTimeout(() => this.connect(url, idx), 2000 + idx * 500))
+    } catch { setTimeout(() => this.connect(url, idx), 5000) }
   }
 
   subscribe(sub) {
-    this.pendingSubs = this.pendingSubs || []
-    this.pendingSubs.push(sub)
-    this.sockets.forEach(ws => {
-      if (ws?.readyState === 1) ws.send(JSON.stringify(sub))
-    })
+    this.subs.push(sub)
+    this.sockets.filter(ws => ws?.readyState === 1).forEach(ws => ws.send(JSON.stringify(sub)))
   }
 
-  start() {
-    this.endpoints.forEach((_, i) => {
-      setTimeout(() => this.connect(i), i * 200)
-    })
+  start(primaryWss) {
+    const endpoints = [primaryWss, ...(FREE_WSS[this.chain] || [])].filter(Boolean)
+    for (let i = 0; i < Math.min(this.maxConns, endpoints.length); i++) {
+      setTimeout(() => this.connect(endpoints[i], i), i * 300)
+    }
     return this
   }
 }
 
-// ─── ROUTER REGISTRY ──────────────────────────────────────────────────────────
-
-const _routers = {}
-const _dualWS  = {}
-
-export function getRouter(chainName) {
-  return _routers[chainName]
-}
-
-export function getDualWS(chainName) {
-  return _dualWS[chainName]
-}
+const _routers = {}, _ws = {}
 
 export function initRPC(chains) {
-  for (const chain of Object.values(chains)) {
-    _routers[chain.name] = new RPCRouter(chain.name, chain.rpcHttp, chain.rpcWss)
-    _dualWS[chain.name]  = new DualWebSocket(chain.name, chain.rpcWss, chain)
-    _dualWS[chain.name].start()
-  }
-  console.log('[RPC] 6-tier router + dual WebSocket initialized for ' +
-    Object.keys(chains).length + ' chains')
+  Object.values(chains).forEach(c => {
+    _routers[c.name] = new RPCRouter(c.name, c.rpcHttp)
+    _ws[c.name] = new ChainWS(c.name, c.tier || 3).start(c.rpcWss)
+  })
+  console.log(`[RPC] Initialized ${Object.keys(chains).length} chains`)
 }
 
-export async function rpcCall(chainName, method, params = []) {
-  const router = _routers[chainName]
-  if (!router) throw new Error('No router for ' + chainName)
-  return router.call(method, params)
+export const rpcCall = (chain, method, params) => {
+  const r = _routers[chain]
+  return r ? r.call(method, params) : Promise.reject(new Error('No router: ' + chain))
 }
-
-export function getRPCStatus() {
-  return Object.fromEntries(
-    Object.entries(_routers).map(([n, r]) => [n, r.getStatus()])
-  )
-}
+export const getWS = chain => _ws[chain]
