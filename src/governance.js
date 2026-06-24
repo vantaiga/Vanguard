@@ -1,5 +1,8 @@
-// X7-SV · governance.js — P12 governance front-runner
+// X7-SV · governance.js — standalone governance watcher
+// Full implementation is in revenue.js (Stream 5) — this re-exports
 
+export { } // governance scanning runs inside revenue.js startRevenue()
+// Kept as separate file for future expansion (e.g. Nightfall governance calendar)
 import { getConfig } from './db.js'
 import { p12GovernanceSignal } from './propellers.js'
 
