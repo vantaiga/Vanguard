@@ -1,20 +1,18 @@
-// X7-SV · bootstrap.js — ARCHITECTURE 1: Zero-Seed · Zero-Gas · Expanded
-//
-// FIX: getGasParams() — EIP-1559 invariant: maxFeePerGas >= maxPriorityFeePerGas
-//   OLD (broken): tip from 80th percentile > maxFee when base fee is low
-//   NEW (fixed):  tip = fixed gwei per attempt, maxFee = baseFee*2 + tip (always valid)
+// X7-SV · bootstrap.js — ARCHITECTURE 1: Zero-Seed · Zero-Gas
+// FIXED: constructor takes 5 args (weth now explicit)
+// FIXED: bootstrapExecute passes executor address for profit sweep
+// FIXED: amountOutMinimum=0 in X7.sol _roundTrip (no revert)
 
 import { keccak256, encodePacked, encodeAbiParameters, parseAbiParameters } from 'viem'
-import { getChains, getActiveChains, getChain } from './chains.js'
-import { getContractAddr, setContractAddr, getExecutorAddress, getWalletClient, getPublicClient, contractExists, sendTx, waitTx } from './pimlico.js'
+import { getActiveChains, getChain } from './chains.js'
+import { getContractAddr, setContractAddr, getExecutorAddress, getWalletClient, contractExists, sendTx, waitTx } from './pimlico.js'
 import { compile, getArtifact } from './compiler.js'
-import { rpcCall } from './rpc.js'
 import { getConfig, setConfig } from './db.js'
 import { emit } from './events.js'
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
-const CREATE2_FACTORY = '0x4e59b44847b379578588920cA78FbF26c0B4956C'
-const FLASH_AMOUNT_WETH = 100000n * 10n**18n
+const CREATE2_FACTORY   = '0x4e59b44847b379578588920cA78FbF26c0B4956C'
+const FLASH_AMOUNT_WETH = 100000n * 10n**18n // pure BigInt — no float
 
 // ── MULTI-PROVIDER ETH RPC POOL ───────────────────────────────────────────────
 const ETH_PROVIDERS = [
@@ -61,7 +59,7 @@ let   _ethBundleInFlight = false
 let   _lastBundleAttempt = 0
 const BUNDLE_COOLDOWN_MS = 13000
 
-// ── CREATE2 ───────────────────────────────────────────────────────────────────
+// ── CREATE2 PRE-COMPUTATION ───────────────────────────────────────────────────
 export function computeCreate2Address(bytecode) {
   const executor = getExecutorAddress()
   if (!executor) return null
@@ -86,59 +84,34 @@ function buildDeployCalldata(bytecode, constructorArgs, salt) {
   return selector + saltPadded + offset + lenHex + dataHex
 }
 
-function buildBootstrapCalldata(chain) {
+// FIXED: bootstrapExecute now takes executor address as last arg
+// Signature: bootstrapExecute(address _weth, address _usdc, uint256 flashAmount,
+//                              uint24 buyFee, uint24 sellFee, address executor)
+function buildBootstrapCalldata(chain, executor) {
   if (!chain?.weth || !chain?.usdc) return null
   const selector = '0x' + keccak256(new TextEncoder().encode(
-    'bootstrapExecute(address,address,uint256,uint24,uint24,uint256)'
+    'bootstrapExecute(address,address,uint256,uint24,uint24,address)'
   )).slice(2,10)
   const args = encodeAbiParameters(
-    parseAbiParameters('address,address,uint256,uint24,uint24,uint256'),
-    [chain.weth, chain.usdc, FLASH_AMOUNT_WETH, 500, 3000, 8000n]
+    parseAbiParameters('address,address,uint256,uint24,uint24,address'),
+    [chain.weth, chain.usdc, FLASH_AMOUNT_WETH, 500, 3000, executor]
   )
   return selector + args.slice(2)
 }
 
-// ── GAS PARAMS — FIXED ────────────────────────────────────────────────────────
-// EIP-1559 invariant: maxFeePerGas >= maxPriorityFeePerGas — ALWAYS
-//
-// Formula:
-//   baseFee = latest block baseFeePerGas  (real current network cost)
-//   tip     = fixed per attempt           (never derived from volatile percentile)
-//   maxFee  = baseFee * 2 + tip           (mathematically >= tip since baseFee >= 0)
-//
-// At low fees  (base 0.8 gwei): maxFee = 3.1  gwei, tip = 1.5 gwei ✓
-// At high fees (base  50 gwei): maxFee = 101.5 gwei, tip = 1.5 gwei ✓
-// Invariant holds at ANY base fee level.
-//
-// Escalation: tip grows per attempt — miner incentive increases each block
-//   attempt 0: 1.5 gwei  (competitive baseline)
-//   attempt 1: 2.0 gwei  (+33% — missed block 1)
-//   attempt 2: 3.0 gwei  (+100% — missed block 2)
-//   attempt 3: 5.0 gwei  (+233% — last chance, maximum aggression)
-
-const TIPS = [
-  1500000000n,  // attempt 0: 1.5 gwei
-  2000000000n,  // attempt 1: 2.0 gwei
-  3000000000n,  // attempt 2: 3.0 gwei
-  5000000000n,  // attempt 3: 5.0 gwei
-]
+// ── GAS PARAMS — EIP-1559 INVARIANT GUARANTEED ───────────────────────────────
+// maxFeePerGas = baseFee*2 + tip — always >= tip regardless of network conditions
+const TIPS = [1500000000n, 2000000000n, 3000000000n, 5000000000n]
 
 async function getGasParams(attempt = 0) {
   const tip = TIPS[Math.min(attempt, TIPS.length - 1)]
   try {
     const block   = await ethRPC('eth_getBlockByNumber', ['latest', false])
-    const baseFee = BigInt(block?.baseFeePerGas || '0x3b9aca00') // fallback 1 gwei
-    const maxFee  = baseFee * 2n + tip  // always >= tip, absorbs next-block 12.5% increase
-    return {
-      maxFeePerGas:         maxFee,
-      maxPriorityFeePerGas: tip,
-    }
+    const baseFee = BigInt(block?.baseFeePerGas || '0x3b9aca00')
+    const maxFee  = baseFee * 2n + tip
+    return { maxFeePerGas: maxFee, maxPriorityFeePerGas: tip }
   } catch {
-    // Fallback: safe static values — invariant still holds
-    return {
-      maxFeePerGas:         tip * 3n,  // 3x tip = always > tip
-      maxPriorityFeePerGas: tip,
-    }
+    return { maxFeePerGas: tip * 3n, maxPriorityFeePerGas: tip }
   }
 }
 
@@ -167,7 +140,7 @@ async function submitBundle(txs, blockNum) {
         signal: AbortSignal.timeout(3000)
       })
       .then(r => r.json())
-      .then(d => ({ url, ok:!!d.result, hash:d.result?.bundleHash }))
+      .then(d => ({ url, ok:!!d.result }))
       .catch(() => ({ url, ok:false }))
     )
   )
@@ -181,8 +154,9 @@ async function bootstrapEthereum(artifact) {
   if (_ethBundleInFlight) return null
   if (Date.now() - _lastBundleAttempt < BUNDLE_COOLDOWN_MS) return null
 
-  const chain = getChain('ethereum')
-  if (!chain?.weth || !chain?.usdc) return null
+  const chain    = getChain('ethereum')
+  const executor = getExecutorAddress()
+  if (!chain?.weth || !chain?.usdc || !executor) return null
 
   const computed = computeCreate2Address(artifact.bytecode)
   if (!computed) return null
@@ -193,6 +167,7 @@ async function bootstrapEthereum(artifact) {
     setContractAddr('ethereum', addr)
     _live.add('ethereum')
     emit('deploy_success', { chain:'ethereum', address:addr, method:'already-live' })
+    setTimeout(() => propagateToL2s().catch(() => {}), 3000)
     return addr
   }
 
@@ -203,11 +178,9 @@ async function bootstrapEthereum(artifact) {
     console.log('[BOOTSTRAP] ETH zero-seed bundle building...')
     console.log('[BOOTSTRAP] Target address:', addr)
 
-    const executor = getExecutorAddress()
-    const wallet   = getWalletClient('ethereum')
+    const wallet = getWalletClient('ethereum')
     if (!wallet) return null
 
-    // Get nonce + block + gas in parallel — race across all 8 providers
     const [nonceHex, blockHex, gas] = await Promise.all([
       ethRPC('eth_getTransactionCount', [executor, 'pending']),
       ethRPC('eth_blockNumber', []),
@@ -219,22 +192,26 @@ async function bootstrapEthereum(artifact) {
 
     console.log(`[BOOTSTRAP] nonce=${nonce} block=${blockNum} maxFee=${gas.maxFeePerGas/1000000000n}gwei tip=${gas.maxPriorityFeePerGas/1000000000n}gwei`)
 
+    // FIXED: 5 constructor args (router, usdc, weth, balancer, aave)
     const constructorArgs = encodeAbiParameters(
-      parseAbiParameters('address,address,address,address'),
+      parseAbiParameters('address,address,address,address,address'),
       [
         chain.router,
         chain.usdc,
+        chain.weth,
         chain.flashAddr || '0xBA12222222228d8Ba445958a75a0704d566BF2C8',
         chain.aavePool  || '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
       ]
     )
 
-    const deployCalldata    = buildDeployCalldata(artifact.bytecode, constructorArgs, salt)
-    const bootstrapCalldata = buildBootstrapCalldata(chain)
+    const deployCalldata = buildDeployCalldata(artifact.bytecode, constructorArgs, salt)
+
+    // FIXED: pass executor so receiveFlashLoan sweeps profit to wallet
+    const bootstrapCalldata = buildBootstrapCalldata(chain, executor)
     if (!bootstrapCalldata) return null
 
-    // Sign both transactions
-    let signedDeploy, signedExec
+    // Sign deploy tx (nonce)
+    let signedDeploy
     try {
       signedDeploy = await wallet.signTransaction({
         to: CREATE2_FACTORY, data: deployCalldata,
@@ -245,6 +222,8 @@ async function bootstrapEthereum(artifact) {
       return null
     }
 
+    // Sign execute tx (nonce+1)
+    let signedExec
     try {
       signedExec = await wallet.signTransaction({
         to: addr, data: bootstrapCalldata,
@@ -258,22 +237,19 @@ async function bootstrapEthereum(artifact) {
     // Submit across 4 blocks with escalating tips
     for (let attempt = 0; attempt < 4; attempt++) {
       const targetBlock = blockNum + attempt + 1
-      console.log(`[BOOTSTRAP] ETH attempt ${attempt+1}/4 targeting block ${targetBlock} tip=${gas.maxPriorityFeePerGas/1000000000n}gwei`)
+      const tipGwei = gas.maxPriorityFeePerGas / 1000000000n
+      console.log(`[BOOTSTRAP] ETH attempt ${attempt+1}/4 targeting block ${targetBlock} tip=${tipGwei}gwei`)
 
       const txs  = [signedDeploy, signedExec]
       const wins = await submitBundle(txs, targetBlock)
-
-      // Submit to next block simultaneously — double coverage
-      submitBundle(txs, targetBlock + 1).catch(() => {})
+      submitBundle(txs, targetBlock + 1).catch(() => {}) // double coverage
 
       if (wins.length > 0) {
         console.log(`[BOOTSTRAP] ETH bundle accepted by: ${wins.join(', ')}`)
       }
 
-      // Wait one block
       await new Promise(r => setTimeout(r, 12500))
 
-      // Check if deployed
       const deployed = await contractExists('ethereum', addr).catch(() => false)
       if (deployed) {
         setContractAddr('ethereum', addr)
@@ -284,7 +260,6 @@ async function bootstrapEthereum(artifact) {
         return addr
       }
 
-      // Escalate gas for next attempt — re-sign with higher tip
       if (attempt < 3) {
         const newGas = await getGasParams(attempt + 1)
         console.log(`[BOOTSTRAP] Escalating tip to ${newGas.maxPriorityFeePerGas/1000000000n}gwei`)
@@ -304,7 +279,7 @@ async function bootstrapEthereum(artifact) {
       }
     }
 
-    // Final check after all 4 attempts
+    // Final check
     const final = await contractExists('ethereum', addr).catch(() => false)
     if (final) {
       setContractAddr('ethereum', addr)
@@ -370,11 +345,13 @@ async function deployL2(chainName) {
     const chain = getChain(chainName)
     if (!chain) throw new Error('No chain config')
 
+    // FIXED: 5 constructor args
     const constructorArgs = encodeAbiParameters(
-      parseAbiParameters('address,address,address,address'),
+      parseAbiParameters('address,address,address,address,address'),
       [
         chain.router   || '0x0000000000000000000000000000000000000001',
         chain.usdc     || '0x0000000000000000000000000000000000000001',
+        chain.weth     || '0x0000000000000000000000000000000000000001',
         chain.flashAddr|| '0xBA12222222228d8Ba445958a75a0704d566BF2C8',
         chain.aavePool || '0x0000000000000000000000000000000000000001'
       ]
@@ -388,7 +365,7 @@ async function deployL2(chainName) {
     if (!receipt || receipt.status === 'reverted') throw new Error('tx reverted')
 
     const verified = await contractExists(chainName, addr).catch(() => false)
-    if (!verified) throw new Error('Not at CREATE2 address post-deploy')
+    if (!verified) throw new Error('Not at CREATE2 address')
 
     setContractAddr(chainName, addr)
     _live.add(chainName)
@@ -517,7 +494,6 @@ export async function initBootstrap() {
   if (_live.has('ethereum')) {
     const l2s = getActiveChains().filter(c => c.name !== 'ethereum' && !_live.has(c.name))
     if (l2s.length > 0) {
-      console.log('[BOOTSTRAP] Deploying', l2s.length, 'remaining L2s...')
       await Promise.allSettled(
         l2s.map((c, i) =>
           new Promise(r => setTimeout(r, i * 300)).then(() => deployL2(c.name))
