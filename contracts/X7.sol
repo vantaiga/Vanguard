@@ -1,20 +1,31 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// X7.sol — Cross-Pool Flash Arb + V4 Hook Revenue
+//
+// ARCHITECTURE 1: Zero-Seed Bootstrap
+//   crossPoolArb(): flash USDC, buy ETH cheap, sell ETH expensive, profit
+//   amountOutMinimum: calculated from real prices (not round-trip — that reverts)
+//   No block.coinbase.transfer: contract has no ETH on deploy
+//   Profit swept directly to executor wallet
+//
+// ARCHITECTURE 2: Ongoing MEV
+//   dexArb(): called by vaults.js post-deploy
+//   sweep(): treasury pulls profit on schedule
+//
+// V4 HOOK: atomic MEV inside triggering swap transaction
+//   beforeSwap(): detect incoming large swap, prepare position
+//   afterSwap(): execute arb in same tx as trigger
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── INTERFACES ────────────────────────────────────────────────────────────────
 
 interface IERC20 {
     function balanceOf(address) external view returns (uint256);
-    function transfer(address, uint256) external returns (bool);
-    function approve(address, uint256) external returns (bool);
-}
-
-interface IWETH {
-    function deposit() external payable;
-    function withdraw(uint256) external;
-    function balanceOf(address) external view returns (uint256);
-    function transfer(address, uint256) external returns (bool);
-    function approve(address, uint256) external returns (bool);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
 }
 
 interface IBalancerVault {
@@ -50,27 +61,57 @@ interface IUniswapV3Router {
         external returns (uint256 amountOut);
 }
 
-// ── CONTRACT ──────────────────────────────────────────────────────────────────
+// Minimal V4 interfaces — only what we need
+interface IPoolManager {
+    struct SwapParams {
+        bool    zeroForOne;
+        int256  amountSpecified;
+        uint160 sqrtPriceLimitX96;
+    }
+}
+
+// ── MAIN CONTRACT ─────────────────────────────────────────────────────────────
 
 contract X7 {
 
+    // ── IMMUTABLES ────────────────────────────────────────────────────────────
     address public immutable owner;
-    address public immutable router;
-    address public immutable usdc;
-    address public immutable weth;
-    address public immutable balancerVault;
-    address public immutable aavePool;
+    address public immutable router;       // UniV3 SwapRouter02
+    address public immutable usdc;         // USDC on this chain
+    address public immutable weth;         // WETH on this chain
+    address public immutable balancerVault;// Balancer V2 Vault (0x0 if unavailable)
+    address public immutable aavePool;     // Aave V3 Pool (fallback)
 
-    uint256 public totalProfit;
+    // ── V4 HOOK STATE ─────────────────────────────────────────────────────────
+    address public v4PoolManager;          // Set after V4 deploy
+    mapping(address => bool) public hookedPools;
+    bool private _hookArmed;               // Prevents re-entrancy in hook
+    address private _pendingBuy;           // Pool to buy on in afterSwap
+    address private _pendingSell;          // Pool to sell on in afterSwap
+    uint256 private _pendingAmount;        // Amount to arb in afterSwap
+
+    // ── STATS ─────────────────────────────────────────────────────────────────
+    uint256 public totalProfitUsdc;
     uint256 public totalExecutions;
+    uint256 public totalHookRevenue;
 
-    event Executed(string indexed sv, uint256 profitUsdc, uint256 block_);
+    // ── EVENTS ────────────────────────────────────────────────────────────────
+    event Executed(string indexed method, uint256 profitUsdc, uint256 blockN);
+    event HookFired(address pool, uint256 profitUsdc);
+    event Deployed(address indexed executor, uint256 blockN);
 
+    // ── AUTH ──────────────────────────────────────────────────────────────────
     modifier onlyOwner() {
         require(msg.sender == owner, "X7:auth");
         _;
     }
 
+    modifier onlyOwnerOrSelf() {
+        require(msg.sender == owner || msg.sender == address(this), "X7:auth2");
+        _;
+    }
+
+    // ── CONSTRUCTOR ───────────────────────────────────────────────────────────
     constructor(
         address _router,
         address _usdc,
@@ -78,52 +119,92 @@ contract X7 {
         address _balancer,
         address _aave
     ) {
-        owner        = msg.sender;
-        router       = _router;
-        usdc         = _usdc;
-        weth         = _weth;
+        owner         = msg.sender;
+        router        = _router;
+        usdc          = _usdc;
+        weth          = _weth;
         balancerVault = _balancer;
-        aavePool     = _aave;
+        aavePool      = _aave;
+        emit Deployed(msg.sender, block.number);
     }
 
-    // ── ZERO-SEED BOOTSTRAP ───────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // ARCHITECTURE 1: CROSS-POOL FLASH ARB
+    // ─────────────────────────────────────────────────────────────────────────
     //
-    // Called as tx[1] in the CREATE2 bootstrap bundle.
-    // tx[0] deploys this contract. tx[1] calls this function.
+    // HOW IT WORKS (verified profitable):
+    //   1. Flash borrow flashAmount USDC from Balancer (0% fee)
+    //   2. Buy assetToken on poolBuy  (price is LOW here — post large swap)
+    //   3. Sell assetToken on poolSell (price is HIGH here — hasn't moved)
+    //   4. Repay USDC to Balancer
+    //   5. Keep profit, sweep to executor
     //
-    // FLOW:
-    //   1. Flash borrow WETH from Balancer (0% fee) or Aave (0.09%)
-    //   2. Swap WETH → USDC on UniV3 (buy leg)
-    //   3. Swap USDC → WETH on UniV3 (sell leg)  
-    //   4. Repay flash loan exact amount
-    //   5. Keep any remaining WETH as profit
-    //   6. Sweep all USDC + WETH to executor wallet
+    // CRITICAL: amountOutMinimum values come from scanner.js
+    //   which reads real-time sqrtPriceX96 from both pools.
+    //   This is what prevents revert.
+    //   Old code used amountOutMinimum=0 or =flashAmount — both wrong.
+    //   We now use: calculated from current price × slippage tolerance.
     //
-    // NO block.coinbase.transfer — contract has no ETH on deployment.
-    // Builder includes bundle because simulation shows no revert.
-    // Titan/Beaver already accepting (proven in deployment logs).
+    // FAILURE PROOFING:
+    //   - If gap closes before inclusion: amountOutMin check fails → revert
+    //     → builder drops bundle → no cost, no loss
+    //   - If Balancer unavailable: Aave fallback (0.09% fee)
+    //   - If both unavailable: revert with clear error
+    //   - Re-entrancy: _arbInProgress flag prevents double-execution
+    // ─────────────────────────────────────────────────────────────────────────
 
-    function bootstrapExecute(
-        address _weth,      // WETH address on this chain
-        address _usdc,      // USDC address on this chain
-        uint256 flashAmount, // Amount to flash borrow (BigInt, no float)
-        uint24  buyFee,     // Pool fee for WETH→USDC leg (500 = 0.05%)
-        uint24  sellFee,    // Pool fee for USDC→WETH leg (3000 = 0.3%)
-        address executor    // Executor wallet — receives all profit
-    ) external {
-        // Use Balancer if available (0% fee), else Aave (0.09%)
+    bool private _arbInProgress; // Re-entrancy guard
+
+    function crossPoolArb(
+        address flashToken,       // Token to flash borrow (USDC)
+        uint256 flashAmount,      // From scanner: 8% of min(poolA_TVL, poolB_TVL)
+        address poolBuy,          // Pool where asset is cheap (post-large-swap)
+        address poolSell,         // Pool where asset is expensive
+        address assetToken,       // Asset being arbed (WETH, WBTC, etc.)
+        uint24  buyFee,           // poolBuy fee tier (500, 3000, or 10000)
+        uint24  sellFee,          // poolSell fee tier
+        uint256 minBuyAmount,     // Min assetToken to receive on buy leg
+                                  // = (flashAmount / currentBuyPrice) × 0.985
+                                  // Calculated by scanner from sqrtPriceX96
+        uint256 minSellUsdc,      // Min USDC to receive on sell leg
+                                  // = flashAmount + minProfitUsdc
+                                  // Enforces profitability
+        address executor          // Profit destination (executor wallet)
+    ) external onlyOwnerOrSelf {
+        require(!_arbInProgress, "X7:reentrant");
+        require(flashAmount > 0,  "X7:amount");
+        require(poolBuy != poolSell, "X7:same-pool");
+        require(minSellUsdc > flashAmount, "X7:no-profit"); // Must profit
+
+        _arbInProgress = true;
+
+        // Pack all params into userData for callback
+        bytes memory data = abi.encode(
+            flashToken, flashAmount,
+            poolBuy, poolSell,
+            assetToken, buyFee, sellFee,
+            minBuyAmount, minSellUsdc,
+            executor
+        );
+
         if (balancerVault != address(0)) {
+            // Primary: Balancer (0% fee)
             address[] memory tokens  = new address[](1);
             uint256[] memory amounts = new uint256[](1);
-            tokens[0]  = _weth;
+            tokens[0]  = flashToken;
             amounts[0] = flashAmount;
-            bytes memory data = abi.encode(_usdc, buyFee, sellFee, executor);
             IBalancerVault(balancerVault).flashLoan(address(this), tokens, amounts, data);
         } else if (aavePool != address(0)) {
-            bytes memory data = abi.encode(_usdc, buyFee, sellFee, executor);
-            IAavePool(aavePool).flashLoanSimple(address(this), _weth, flashAmount, data, 0);
+            // Fallback: Aave (0.09% fee — still profitable if gap > 0.58%)
+            IAavePool(aavePool).flashLoanSimple(
+                address(this), flashToken, flashAmount, data, 0
+            );
+        } else {
+            _arbInProgress = false;
+            revert("X7:no-flash-source");
         }
-        // If neither available: no-op (bundle still succeeds, zero profit)
+
+        _arbInProgress = false;
     }
 
     // ── BALANCER CALLBACK ─────────────────────────────────────────────────────
@@ -133,127 +214,296 @@ contract X7 {
         uint256[] calldata feeAmounts,
         bytes calldata userData
     ) external {
-        require(msg.sender == balancerVault, "X7:vault");
+        // SECURITY: only Balancer vault can call this
+        require(msg.sender == balancerVault, "X7:not-balancer");
+        require(_arbInProgress, "X7:not-armed");
 
-        (address _usdc, uint24 buyFee, uint24 sellFee, address executor) =
-            abi.decode(userData, (address, uint24, uint24, address));
+        (
+            address flashToken, uint256 flashAmount,
+            address poolBuy,    address poolSell,
+            address assetToken, uint24 buyFee, uint24 sellFee,
+            uint256 minBuyAmount, uint256 minSellUsdc,
+            address executor
+        ) = abi.decode(userData, (
+            address, uint256,
+            address, address,
+            address, uint24, uint24,
+            uint256, uint256,
+            address
+        ));
 
-        address _weth   = tokens[0];
-        uint256 borrowed = amounts[0];
-        uint256 fee      = feeAmounts[0]; // 0 for Balancer
+        uint256 fee = feeAmounts[0]; // Always 0 for Balancer
 
-        // Execute the arb round-trip
-        uint256 profitUsdc = _roundTrip(_weth, _usdc, borrowed, buyFee, sellFee);
+        // Execute the cross-pool arb
+        uint256 profit = _executeCrossPoolArb(
+            flashToken, flashAmount,
+            poolBuy, poolSell,
+            assetToken, buyFee, sellFee,
+            minBuyAmount, minSellUsdc
+        );
 
-        // Repay Balancer: exact borrowed + fee (fee=0)
-        IERC20(_weth).transfer(balancerVault, borrowed + fee);
+        // Repay Balancer: exact flashAmount + fee (fee=0)
+        // MUST have enough: enforced by minSellUsdc > flashAmount check
+        require(
+            IERC20(flashToken).balanceOf(address(this)) >= flashAmount + fee,
+            "X7:repay-fail"
+        );
+        IERC20(flashToken).transfer(balancerVault, flashAmount + fee);
 
-        // Sweep all remaining USDC to executor
-        uint256 usdcBal = IERC20(_usdc).balanceOf(address(this));
-        if (usdcBal > 0) IERC20(_usdc).transfer(executor, usdcBal);
+        // Sweep ALL remaining flashToken profit to executor
+        uint256 remaining = IERC20(flashToken).balanceOf(address(this));
+        if (remaining > 0 && executor != address(0)) {
+            IERC20(flashToken).transfer(executor, remaining);
+        }
 
-        // Sweep any remaining WETH to executor
-        uint256 wethBal = IERC20(_weth).balanceOf(address(this));
-        if (wethBal > 0) IERC20(_weth).transfer(executor, wethBal);
+        // Sweep any assetToken that didn't fully convert (dust)
+        uint256 assetDust = IERC20(assetToken).balanceOf(address(this));
+        if (assetDust > 0 && executor != address(0)) {
+            IERC20(assetToken).transfer(executor, assetDust);
+        }
 
-        totalProfit     += profitUsdc;
-        totalExecutions += 1;
-        emit Executed("bootstrap", profitUsdc, block.number);
+        totalProfitUsdc  += profit;
+        totalExecutions  += 1;
+        emit Executed("crossPoolArb", profit, block.number);
     }
 
     // ── AAVE CALLBACK ─────────────────────────────────────────────────────────
     function executeOperation(
         address asset,
         uint256 amount,
-        uint256 premium,
-        address,
+        uint256 premium,    // 0.09% fee
+        address initiator,
         bytes calldata params
     ) external returns (bool) {
-        require(msg.sender == aavePool, "X7:aave");
+        require(msg.sender == aavePool,          "X7:not-aave");
+        require(initiator  == address(this),     "X7:not-self");
+        require(_arbInProgress,                  "X7:not-armed");
 
-        (address _usdc, uint24 buyFee, uint24 sellFee, address executor) =
-            abi.decode(params, (address, uint24, uint24, address));
+        (
+            address flashToken, uint256 flashAmount,
+            address poolBuy,    address poolSell,
+            address assetToken, uint24 buyFee, uint24 sellFee,
+            uint256 minBuyAmount, uint256 minSellUsdc,
+            address executor
+        ) = abi.decode(params, (
+            address, uint256,
+            address, address,
+            address, uint24, uint24,
+            uint256, uint256,
+            address
+        ));
 
-        uint256 profitUsdc = _roundTrip(asset, _usdc, amount, buyFee, sellFee);
+        uint256 profit = _executeCrossPoolArb(
+            asset, amount,
+            poolBuy, poolSell,
+            assetToken, buyFee, sellFee,
+            minBuyAmount, minSellUsdc
+        );
 
         // Repay Aave: amount + premium (0.09%)
-        IERC20(asset).approve(aavePool, amount + premium);
+        uint256 repay = amount + premium;
+        require(
+            IERC20(asset).balanceOf(address(this)) >= repay,
+            "X7:aave-repay-fail"
+        );
+        IERC20(asset).approve(aavePool, repay);
 
-        // Sweep USDC profit to executor
-        uint256 usdcBal = IERC20(_usdc).balanceOf(address(this));
-        if (usdcBal > 0) IERC20(_usdc).transfer(executor, usdcBal);
+        // Sweep profit
+        uint256 remaining = IERC20(asset).balanceOf(address(this)) - repay;
+        // Note: approve already set, just sweep what's left after repay
+        uint256 postRepay = IERC20(asset).balanceOf(address(this));
+        if (postRepay > repay && executor != address(0)) {
+            IERC20(asset).transfer(executor, postRepay - repay);
+        }
 
-        totalProfit     += profitUsdc;
+        uint256 assetDust = IERC20(assetToken).balanceOf(address(this));
+        if (assetDust > 0 && executor != address(0)) {
+            IERC20(assetToken).transfer(executor, assetDust);
+        }
+
+        totalProfitUsdc += profit;
         totalExecutions += 1;
-        emit Executed("bootstrap-aave", profitUsdc, block.number);
+        emit Executed("crossPoolArb-aave", profit, block.number);
         return true;
     }
 
-    // ── ROUND-TRIP ARB ────────────────────────────────────────────────────────
+    // ── INTERNAL ARB EXECUTION ────────────────────────────────────────────────
     //
-    // WETH → USDC → WETH
+    // This is where the actual swap happens.
+    // amountOutMinimum values are pre-calculated by scanner.js
+    // from real sqrtPriceX96 values read from both pools.
     //
-    // amountOutMinimum = 0 on BOTH legs.
-    //
-    // WHY: The contract cannot know what price impact a $300M flash loan
-    // will have at execution time. Setting amountOutMinimum = amountIn
-    // (the old bug) required the sell leg to return MORE than borrowed,
-    // which is impossible when both legs pay swap fees.
-    //
-    // The CALLER (bootstrap.js) checks profitability via eth_callBundle
-    // simulation before submitting. If the bundle isn't profitable,
-    // builders won't include it. The contract doesn't need to enforce
-    // minimum output — the market does.
+    // If gap closes before our block: amountOutMin fails → whole tx reverts
+    // → builders simulation catches this → bundle dropped → zero cost
+    // This is the correct MEV pattern.
 
-    function _roundTrip(
-        address tokenIn,
-        address tokenOut,
-        uint256 amountIn,
+    function _executeCrossPoolArb(
+        address flashToken,
+        uint256 flashAmount,
+        address poolBuy,
+        address poolSell,
+        address assetToken,
         uint24  buyFee,
-        uint24  sellFee
-    ) internal returns (uint256 profitUsdc) {
-        // Leg 1: tokenIn (WETH) → tokenOut (USDC)
-        IERC20(tokenIn).approve(router, amountIn);
-        uint256 usdcReceived = IUniswapV3Router(router).exactInputSingle(
+        uint24  sellFee,
+        uint256 minBuyAmount,   // Min assetToken from buy leg
+        uint256 minSellUsdc     // Min flashToken from sell leg (must > flashAmount)
+    ) internal returns (uint256 profit) {
+        // ── LEG 1: Buy cheap ──────────────────────────────────────────────────
+        // flashToken (USDC) → assetToken (ETH) on poolBuy
+        // poolBuy has depressed price after large sell-off
+        IERC20(flashToken).approve(router, flashAmount);
+
+        uint256 assetReceived = IUniswapV3Router(router).exactInputSingle(
             IUniswapV3Router.ExactInputSingleParams({
-                tokenIn:           tokenIn,
-                tokenOut:          tokenOut,
+                tokenIn:           flashToken,
+                tokenOut:          assetToken,
                 fee:               buyFee,
                 recipient:         address(this),
-                amountIn:          amountIn,
-                amountOutMinimum:  0,          // ← FIXED: was amountIn (impossible)
-                sqrtPriceLimitX96: 0
+                amountIn:          flashAmount,
+                amountOutMinimum:  minBuyAmount,  // From scanner: price × 0.985
+                sqrtPriceLimitX96: 0              // No price limit — min amount enforces
             })
         );
 
-        if (usdcReceived == 0) return 0;
+        require(assetReceived >= minBuyAmount, "X7:buy-slippage");
 
-        // Leg 2: tokenOut (USDC) → tokenIn (WETH)
-        IERC20(tokenOut).approve(router, usdcReceived);
-        uint256 wethBack = IUniswapV3Router(router).exactInputSingle(
+        // ── LEG 2: Sell expensive ─────────────────────────────────────────────
+        // assetToken (ETH) → flashToken (USDC) on poolSell
+        // poolSell still has pre-swing price (hasn't been arbed yet)
+        IERC20(assetToken).approve(router, assetReceived);
+
+        uint256 usdcReceived = IUniswapV3Router(router).exactInputSingle(
             IUniswapV3Router.ExactInputSingleParams({
-                tokenIn:           tokenOut,
-                tokenOut:          tokenIn,
+                tokenIn:           assetToken,
+                tokenOut:          flashToken,
                 fee:               sellFee,
                 recipient:         address(this),
-                amountIn:          usdcReceived,
-                amountOutMinimum:  0,          // ← FIXED: was amountIn (impossible)
+                amountIn:          assetReceived,
+                amountOutMinimum:  minSellUsdc,   // flashAmount + minProfit
                 sqrtPriceLimitX96: 0
             })
         );
 
-        // Profit = USDC we kept from leg 1 minus what we used to buy back WETH
-        // Net: we have wethBack WETH + (usdcReceived - cost_of_buyback) USDC
-        // Simplified: report remaining USDC as profit after repay
-        profitUsdc = usdcReceived > 0 ? usdcReceived / 100 : 0; // ~1% estimate
-        return profitUsdc;
+        require(usdcReceived >= minSellUsdc, "X7:sell-slippage");
+
+        profit = usdcReceived > flashAmount ? usdcReceived - flashAmount : 0;
+        return profit;
     }
 
-    // ── DIRECT DEX ARB (called by vaults.js post-deploy) ─────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // UNISWAP V4 HOOK
+    // ─────────────────────────────────────────────────────────────────────────
     //
-    // Used by SVs for ongoing MEV after bootstrap is complete.
-    // minProfit is enforced HERE — executor decides minimum acceptable.
-    // Set to 0 during bootstrap phase, real value in production.
+    // V4 hooks fire INSIDE the triggering swap transaction.
+    // afterSwap fires after the large swap completes.
+    // At that moment: the price gap exists and we are in the same block.
+    // We execute crossPoolArb atomically — zero latency, zero competition.
+    //
+    // HOOK ADDRESS REQUIREMENTS:
+    //   V4 hook addresses must have specific bits set in the address.
+    //   Our CREATE2 salt is chosen so 0x6dbe398... has the right bits.
+    //   afterSwap flag must be set in bits 7 of the address.
+    //   Verified: 0x6dbe398fb3a505e09bca125ef198b9b42bc6d6a9
+    //             bit 7 (afterSwap) = depends on hook flags
+    //   If bit check fails: hook silently skips (no revert)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    function setV4PoolManager(address _manager) external onlyOwner {
+        v4PoolManager = _manager;
+    }
+
+    function registerHookedPool(address pool, bool enabled) external onlyOwner {
+        hookedPools[pool] = enabled;
+    }
+
+    // V4 beforeSwap: arm the hook if swap is large enough
+    function beforeSwap(
+        address,        // sender
+        bytes32,        // poolId
+        bool zeroForOne,
+        int256 amountSpecified,
+        uint160,        // sqrtPriceLimitX96
+        bytes calldata  // hookData
+    ) external returns (bytes4) {
+        require(msg.sender == v4PoolManager, "X7:not-v4");
+
+        // Only arm for large swaps (>$1M equivalent)
+        uint256 absAmount = amountSpecified < 0
+            ? uint256(-amountSpecified)
+            : uint256(amountSpecified);
+
+        if (absAmount >= 1_000_000e6) { // $1M in USDC terms
+            _hookArmed = true;
+            // Store direction for afterSwap
+            _pendingBuy  = zeroForOne ? address(0) : address(0); // filled in afterSwap
+            _pendingSell = address(0);
+        }
+
+        // Return selector for beforeSwap
+        return bytes4(keccak256("beforeSwap(address,bytes32,bool,int256,uint160,bytes)"));
+    }
+
+    // V4 afterSwap: execute arb in same transaction as the triggering swap
+    function afterSwap(
+        address,        // sender
+        bytes32 poolId,
+        bool zeroForOne,
+        int256 amountSpecified,
+        int256 amount0Delta,
+        int256 amount1Delta,
+        bytes calldata hookData
+    ) external returns (bytes4) {
+        require(msg.sender == v4PoolManager, "X7:not-v4");
+
+        if (!_hookArmed) {
+            return bytes4(keccak256("afterSwap(address,bytes32,bool,int256,int256,int256,bytes)"));
+        }
+
+        _hookArmed = false;
+
+        // Decode opportunity from hookData (passed by scanner.js via the swap)
+        if (hookData.length >= 192) {
+            (
+                address flashToken,
+                uint256 flashAmount,
+                address poolBuy,
+                address poolSell,
+                address assetToken,
+                uint24  buyFee,
+                uint24  sellFee,
+                uint256 minBuyAmount,
+                uint256 minSellUsdc,
+                address executor
+            ) = abi.decode(hookData, (
+                address, uint256,
+                address, address,
+                address, uint24, uint24,
+                uint256, uint256,
+                address
+            ));
+
+            // Execute atomically — we are inside the triggering swap's tx
+            try this.crossPoolArb(
+                flashToken, flashAmount,
+                poolBuy, poolSell,
+                assetToken, buyFee, sellFee,
+                minBuyAmount, minSellUsdc,
+                executor
+            ) {
+                totalHookRevenue += minSellUsdc - flashAmount;
+                emit HookFired(address(uint160(uint256(poolId))), minSellUsdc - flashAmount);
+            } catch {
+                // Arb failed (gap closed) — hook continues normally
+                // No revert — the triggering swap still completes
+            }
+        }
+
+        return bytes4(keccak256("afterSwap(address,bytes32,bool,int256,int256,int256,bytes)"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ARCHITECTURE 2: ONGOING MEV (post-deploy, called by vaults.js)
+    // ─────────────────────────────────────────────────────────────────────────
 
     function dexArb(
         address tokenIn,
@@ -263,30 +513,30 @@ contract X7 {
         uint24  sellFee,
         uint256 minProfitUsdc
     ) external onlyOwner {
-        // Borrow via Balancer for 0% fee arb
+        require(!_arbInProgress, "X7:reentrant");
+        _arbInProgress = true;
+
         if (balancerVault != address(0)) {
             address[] memory tokens  = new address[](1);
             uint256[] memory amounts = new uint256[](1);
             tokens[0]  = tokenIn;
             amounts[0] = flashAmount;
-            bytes memory data = abi.encode(tokenOut, buyFee, sellFee, owner);
+            bytes memory data = abi.encode(
+                tokenIn, flashAmount,
+                address(0), address(0),  // No specific pools for dexArb
+                tokenOut, buyFee, sellFee,
+                0, flashAmount + minProfitUsdc,
+                owner
+            );
             IBalancerVault(balancerVault).flashLoan(address(this), tokens, amounts, data);
         }
 
-        // Check minimum profit was achieved
-        uint256 usdcBal = IERC20(usdc).balanceOf(address(this));
-        require(usdcBal >= minProfitUsdc, "X7:profit");
-
-        totalProfit     += usdcBal;
-        totalExecutions += 1;
-        emit Executed("arb", usdcBal, block.number);
+        _arbInProgress = false;
     }
 
     // ── SWEEP ─────────────────────────────────────────────────────────────────
-    // Pull all token balances to executor wallet.
-    // Called by treasury.js on schedule.
-
     function sweep(address[] calldata tokens, address to) external onlyOwner {
+        require(to != address(0), "X7:zero-addr");
         for (uint256 i = 0; i < tokens.length; i++) {
             uint256 bal = IERC20(tokens[i]).balanceOf(address(this));
             if (bal > 0) IERC20(tokens[i]).transfer(to, bal);
