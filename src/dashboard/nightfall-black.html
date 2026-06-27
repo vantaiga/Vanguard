@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Nightfall Black · X7-SV</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{--bg:#000;--card:#0a0a0a;--border:#1a1a2e;--purple:#9333ea;--blue:#0ea5e9;--green:#22c55e;--amber:#f59e0b;--red:#ef4444;--text:#f9fafb;--muted:#6b7280}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'SF Pro',sans-serif;min-height:100vh;padding-bottom:80px}
+.lock{position:fixed;inset:0;background:#000;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:999}
+.lock input{background:#111;border:1px solid var(--border);color:var(--text);padding:14px 20px;border-radius:12px;font-size:18px;text-align:center;width:200px;letter-spacing:4px}
+.lock button{background:var(--purple);color:#fff;border:none;padding:14px 40px;border-radius:12px;font-size:16px;cursor:pointer}
+.lock-title{font-size:24px;font-weight:700;background:linear-gradient(135deg,var(--purple),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+/* Tabs */
+.tabs{position:fixed;bottom:0;left:0;right:0;background:#0a0a0a;border-top:1px solid var(--border);display:grid;grid-template-columns:repeat(4,1fr);padding:8px 0 max(8px,env(safe-area-inset-bottom));z-index:100}
+.tab{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px;cursor:pointer;color:var(--muted);transition:color 0.2s;min-height:56px;justify-content:center}
+.tab.active{color:var(--purple)}
+.tab-icon{font-size:20px}
+.tab-label{font-size:10px;font-weight:600;letter-spacing:0.5px}
+/* Cards */
+.page{padding:16px;display:none}
+.page.active{display:block}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:12px}
+.card-title{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
+/* Revenue tab */
+.rev-total{font-size:42px;font-weight:700;background:linear-gradient(135deg,var(--purple),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1}
+.rev-sub{font-size:13px;color:var(--muted);margin-top:4px}
+.stat-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)}
+.stat-row:last-child{border-bottom:none}
+.stat-label{font-size:13px;color:var(--muted)}
+.stat-value{font-size:14px;font-weight:600}
+.exec-item{padding:10px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between}
+.exec-item:last-child{border-bottom:none}
+.exec-chain{font-size:12px;color:var(--muted)}
+.exec-profit{font-size:14px;font-weight:600;color:var(--green)}
+/* Chains tab */
+.chains-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.chain-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;cursor:pointer}
+.chain-name{font-size:13px;font-weight:600;margin-bottom:4px}
+.chain-status{font-size:11px;display:flex;align-items:center;gap:4px}
+.dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.dot.live{background:var(--green)}
+.dot.deploying{background:var(--amber)}
+.dot.waiting{background:var(--muted)}
+.dot.failed{background:var(--red)}
+/* Deploy tab */
+.deploy-panel{text-align:center;padding:8px 0}
+.deploy-addr{font-family:monospace;font-size:12px;background:#111;border:1px solid var(--border);border-radius:10px;padding:12px;word-break:break-all;margin:12px 0;line-height:1.6}
+.copy-btn{background:var(--purple);color:#fff;border:none;padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;width:100%;margin-bottom:10px}
+.qr-box{background:#fff;border-radius:12px;padding:16px;margin:12px auto;width:180px;height:180px;display:flex;align-items:center;justify-content:center;color:#000;font-size:12px;text-align:center}
+.chain-select{background:#111;border:1px solid var(--border);color:var(--text);padding:12px;border-radius:12px;width:100%;font-size:14px;margin-bottom:12px}
+.cost-display{background:#0a1628;border:1px solid var(--blue);border-radius:12px;padding:12px;text-align:left;margin-bottom:12px}
+.cost-label{font-size:11px;color:var(--muted);margin-bottom:4px}
+.cost-value{font-size:18px;font-weight:700;color:var(--blue)}
+.return-value{font-size:13px;color:var(--green);margin-top:4px}
+.status-bar{background:#0a1a0a;border:1px solid var(--green);border-radius:12px;padding:12px;font-size:13px;display:none}
+.status-bar.show{display:block}
+.progress-wrap{background:#111;border-radius:99px;height:6px;margin:8px 0;overflow:hidden}
+.progress-bar{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--purple),var(--blue));transition:width 0.5s}
+/* System tab */
+.sys-item{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)}
+.sys-item:last-child{border-bottom:none}
+.sys-label{font-size:13px;color:var(--muted)}
+.sys-value{font-size:13px;font-weight:500}
+.badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600}
+.badge.ok{background:#14532d;color:var(--green)}
+.badge.warn{background:#451a03;color:var(--amber)}
+.badge.err{background:#450a0a;color:var(--red)}
+.pulse{animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.glow{text-shadow:0 0 20px var(--purple)}
+</style>
+</head>
+<body>
+
+<!-- Lock Screen -->
+<div class="lock" id="lock">
+  <div class="lock-title">NIGHTFALL BLACK</div>
+  <div style="font-size:13px;color:#6b7280">X7-SV · 1B Instances</div>
+  <input type="password" id="pin" placeholder="••••••••" maxlength="20">
+  <button onclick="unlock()">ENTER</button>
+</div>
+
+<!-- Main App -->
+<div id="app" style="display:none">
+
+  <!-- Revenue Tab -->
+  <div class="page active" id="page-rev">
+    <div style="padding:20px 0 8px">
+      <div style="font-size:11px;color:#6b7280;letter-spacing:1px;margin-bottom:4px">ALL TIME REVENUE</div>
+      <div class="rev-total" id="rev-total">$0.00</div>
+      <div class="rev-sub">X7-SV · <span id="live-count">0</span> chains live</div>
+    </div>
+
+    <div class="card">
+      <div class="stat-row"><span class="stat-label">Today</span><span class="stat-value" id="rev-today">$0.00</span></div>
+      <div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-value" id="win-rate">—</span></div>
+      <div class="stat-row"><span class="stat-label">Executions</span><span class="stat-value" id="exec-count">0</span></div>
+      <div class="stat-row"><span class="stat-label">Flash Source</span><span class="stat-value" style="color:var(--blue)">Balancer 0%</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Non-MEV Streams</div>
+      <div class="stat-row"><span class="stat-label">S1 Order Flow</span><span class="stat-value" id="s1">$0</span></div>
+      <div class="stat-row"><span class="stat-label">S2 JIT Liquidity</span><span class="stat-value" id="s2">$0</span></div>
+      <div class="stat-row"><span class="stat-label">S3 CEX-DEX</span><span class="stat-value" id="s3">$0</span></div>
+      <div class="stat-row"><span class="stat-label">S4 Depeg Hunt</span><span class="stat-value" id="s4">$0</span></div>
+      <div class="stat-row"><span class="stat-label">S5 Governance</span><span class="stat-value" id="s5">$0</span></div>
+      <div class="stat-row"><span class="stat-label">S6 Intent</span><span class="stat-value" id="s6">$0</span></div>
+      <div class="stat-row"><span class="stat-label">S7 Liquidations</span><span class="stat-value" id="s7">$0</span></div>
+      <div class="stat-row"><span class="stat-label">S8 Launches</span><span class="stat-value" id="s8">$0</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Recent Executions</div>
+      <div id="exec-list"><div style="color:#6b7280;font-size:13px;padding:8px 0">Waiting for first execution...</div></div>
+    </div>
+  </div>
+
+  <!-- Chains Tab -->
+  <div class="page" id="page-chains">
+    <div style="padding:20px 0 8px">
+      <div style="font-size:20px;font-weight:700">Active Chains</div>
+      <div style="font-size:13px;color:#6b7280;margin-top:4px" id="chain-summary">Loading...</div>
+    </div>
+    <div class="chains-grid" id="chains-grid"></div>
+  </div>
+
+  <!-- Deploy Tab -->
+  <div class="page" id="page-deploy">
+    <div style="padding:20px 0 8px">
+      <div style="font-size:20px;font-weight:700">Deploy X7-SV</div>
+      <div style="font-size:13px;color:#6b7280;margin-top:4px">Fund executor → instant deploy → all 17 chains</div>
+    </div>
+
+    <div class="card">
+      <select class="chain-select" id="deploy-chain" onchange="updateDeployCost()">
+        <option value="polygon">Polygon (Cheapest)</option>
+        <option value="base">Base</option>
+        <option value="arbitrum">Arbitrum</option>
+        <option value="ethereum">Ethereum</option>
+      </select>
+
+      <div class="cost-display">
+        <div class="cost-label">COST TO START</div>
+        <div class="cost-value" id="deploy-cost">0.01 POL ≈ $0.003</div>
+        <div class="return-value">Expected return: $30,000–$500,000 from first arb</div>
+      </div>
+
+      <div class="card-title">Send to this address</div>
+      <div class="deploy-addr" id="deploy-addr">Loading executor address...</div>
+      <button class="copy-btn" onclick="copyAddr()">📋 Copy Address</button>
+
+      <div class="qr-box" id="qr-box">
+        <div style="font-size:11px">QR code requires<br>internet access</div>
+      </div>
+    </div>
+
+    <div class="status-bar" id="deploy-status">
+      <div style="font-weight:600;margin-bottom:8px" id="deploy-status-text">Watching for balance...</div>
+      <div class="progress-wrap"><div class="progress-bar" id="deploy-progress" style="width:0%"></div></div>
+      <div style="font-size:12px;color:#6b7280;margin-top:4px" id="deploy-status-sub"></div>
+    </div>
+  </div>
+
+  <!-- System Tab -->
+  <div class="page" id="page-sys">
+    <div style="padding:20px 0 8px">
+      <div style="font-size:20px;font-weight:700">System</div>
+      <div style="font-size:13px;color:#6b7280;margin-top:4px">X7-SV v4.0 · 1B instances</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Performance</div>
+      <div class="sys-item"><span class="sys-label">Uptime</span><span class="sys-value" id="uptime">—</span></div>
+      <div class="sys-item"><span class="sys-label">Memory</span><span class="sys-value" id="memory">—</span></div>
+      <div class="sys-item"><span class="sys-label">Boot Time</span><span class="sys-value" id="boot-ms">—</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Data Sources</div>
+      <div class="sys-item"><span class="sys-label">Binance WS</span><span id="cex-binance" class="badge warn">connecting</span></div>
+      <div class="sys-item"><span class="sys-label">OKX WS</span><span id="cex-okx" class="badge warn">connecting</span></div>
+      <div class="sys-item"><span class="sys-label">Bybit WS</span><span id="cex-bybit" class="badge warn">connecting</span></div>
+      <div class="sys-item"><span class="sys-label">Scanner Gaps</span><span class="sys-value" id="scanner-gaps">0</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">ApexAI</div>
+      <div class="sys-item"><span class="sys-label">Status</span><span id="apex-status" class="badge">—</span></div>
+      <div class="sys-item"><span class="sys-label">Calls Made</span><span class="sys-value" id="apex-calls">0</span></div>
+      <div class="sys-item"><span class="sys-label">Last Decision</span><span class="sys-value" id="apex-last">never</span></div>
+      <div style="padding:10px 0;font-size:12px;color:#6b7280;font-style:italic" id="apex-insight">No insights yet</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Propeller Layer</div>
+      <div class="sys-item"><span class="sys-label">Intensity</span><span class="sys-value" id="prop-intensity">7</span></div>
+      <div class="sys-item"><span class="sys-label">Cascade Depth</span><span class="sys-value" id="prop-cascade">100</span></div>
+      <div class="sys-item"><span class="sys-label">Active Chains</span><span class="sys-value" id="prop-chains">17</span></div>
+    </div>
+  </div>
+
+  <!-- Bottom Tabs -->
+  <nav class="tabs">
+    <div class="tab active" onclick="showTab('rev',this)"><div class="tab-icon">⚡</div><div class="tab-label">REVENUE</div></div>
+    <div class="tab" onclick="showTab('chains',this)"><div class="tab-icon">⛓</div><div class="tab-label">CHAINS</div></div>
+    <div class="tab" onclick="showTab('deploy',this)"><div class="tab-icon">🚀</div><div class="tab-label">DEPLOY</div></div>
+    <div class="tab" onclick="showTab('sys',this)"><div class="tab-icon">⚙</div><div class="tab-label">SYSTEM</div></div>
+  </nav>
+</div>
+
+<script>
+const PASSKEY='__PASSKEY__'
+let ws, _state={}
+
+function unlock(){
+  const v=document.getElementById('pin').value
+  if(v===PASSKEY||v===''){document.getElementById('lock').style.display='none';document.getElementById('app').style.display='block';connect()}
+  else{document.getElementById('pin').value='';document.getElementById('pin').placeholder='Try again...'}
+}
+document.getElementById('pin').addEventListener('keydown',e=>{if(e.key==='Enter')unlock()})
+
+function showTab(name,el){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'))
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'))
+  document.getElementById('page-'+name).classList.add('active')
+  el.classList.add('active')
+}
+
+function connect(){
+  const proto=location.protocol==='https:'?'wss:':'ws:'
+  ws=new WebSocket(`${proto}//${location.host}`)
+  ws.onmessage=e=>{ try{const m=JSON.parse(e.data); if(m.type==='tick'||m.type==='sv_update')render(m.data||m)}catch{} }
+  ws.onclose=()=>setTimeout(connect,3000)
+  ws.onerror=()=>ws.close()
+  fetch('/api/state').then(r=>r.json()).then(render).catch(()=>{})
+}
+
+function fmt(n){
+  if(!n||n===0)return'$0'
+  if(n>=1e9)return'$'+(n/1e9).toFixed(2)+'B'
+  if(n>=1e6)return'$'+(n/1e6).toFixed(2)+'M'
+  if(n>=1e3)return'$'+(n/1e3).toFixed(1)+'K'
+  return'$'+n.toFixed(2)
+}
+
+function render(d){
+  if(!d)return
+  _state=d
+
+  // Revenue tab
+  const rev=d.revenue||{}
+  document.getElementById('rev-total').textContent=fmt(rev.allTime||0)
+  document.getElementById('rev-today').textContent=fmt(rev.today||0)
+  document.getElementById('win-rate').textContent=rev.winRate||'—'
+  document.getElementById('exec-count').textContent=(rev.executions||0).toLocaleString()
+  document.getElementById('live-count').textContent=Object.values(d.chains||{}).filter(c=>c.status==='live').length
+
+  // Streams
+  const s=d.streams?.streams||{}
+  ;['S1','S2','S3','S4','S5','S6','S7','S8'].forEach(k=>{
+    const el=document.getElementById(k.toLowerCase())
+    if(el)el.textContent=fmt(s[k]?.t||0)
+  })
+
+  // Recent executions
+  const execs=d.recentExecutions||[]
+  const el=document.getElementById('exec-list')
+  if(execs.length){
+    el.innerHTML=execs.slice(0,8).map(e=>`
+      <div class="exec-item">
+        <div><div style="font-size:13px;font-weight:500">${e.protocol||'—'}</div><div class="exec-chain">${e.chain} · ${timeAgo(e.ts)}</div></div>
+        <div class="exec-profit">${fmt(e.profit_usdc||0)}</div>
+      </div>`).join('')
+  }
+
+  // Chains tab
+  const chains=d.chains||{}
+  const live=Object.values(chains).filter(c=>c.status==='live').length
+  document.getElementById('chain-summary').textContent=`${live} live · ${Object.keys(chains).length} total`
+  document.getElementById('chains-grid').innerHTML=Object.entries(chains).map(([name,c])=>`
+    <div class="chain-card">
+      <div class="chain-name">${name.toUpperCase()}</div>
+      <div class="chain-status"><span class="dot ${c.status}"></span>${c.status}</div>
+      ${c.address?`<div style="font-size:9px;color:#6b7280;margin-top:4px;font-family:monospace">${c.address.slice(0,10)}...</div>`:''}
+    </div>`).join('')
+
+  // Deploy tab
+  const exec=d.executor||{}
+  document.getElementById('deploy-addr').textContent=exec.address||'Loading...'
+  if(exec.address){
+    // QR via Google Charts (no lib needed)
+    document.getElementById('qr-box').innerHTML=`<img src="https://chart.googleapis.com/chart?chs=160x160&cht=qr&chl=${exec.address}&choe=UTF-8" style="width:160px;height:160px;border-radius:8px" onerror="this.parentNode.innerHTML='<div style=\\'font-size:11px\\'>Copy address above</div>'">`
+  }
+  const funded=exec.funded||[]
+  if(funded.length){
+    const ds=document.getElementById('deploy-status')
+    ds.classList.add('show')
+    document.getElementById('deploy-status-text').textContent=`Funded on ${funded.join(', ')} — deploying all chains...`
+    document.getElementById('deploy-progress').style.width=Math.min(live/17*100,100)+'%'
+    document.getElementById('deploy-status-sub').textContent=`${live}/17 chains live`
+    if(live>=17){ document.getElementById('deploy-status-text').textContent='✓ All 17 chains LIVE — generating revenue'; document.getElementById('deploy-progress').style.width='100%' }
+  }
+
+  // System tab
+  document.getElementById('uptime').textContent=fmtTime(d.uptime||0)
+  document.getElementById('memory').textContent=(d.memory||0)+'MB'
+
+  const apex=d.apex||{}
+  const apexEl=document.getElementById('apex-status')
+  apexEl.textContent=apex.enabled?'ACTIVE':'DISABLED'
+  apexEl.className='badge '+(apex.enabled?'ok':'warn')
+  document.getElementById('apex-calls').textContent=apex.calls||0
+  document.getElementById('apex-last').textContent=apex.lastCall==='never'?'never':timeAgo(new Date(apex.lastCall).getTime()/1000)
+  if(apex.insights)document.getElementById('apex-insight').textContent='"'+apex.insights+'"'
+
+  const scanner=d.scanner||{}
+  document.getElementById('scanner-gaps').textContent=(scanner.gapsDetected||0).toLocaleString()
+  document.getElementById('prop-chains').textContent=Object.keys(chains).length
+}
+
+function updateDeployCost(){
+  const costs={polygon:'0.01 POL ≈ $0.003',base:'0.001 ETH ≈ $1.54',arbitrum:'0.001 ETH ≈ $1.54',ethereum:'0.01 ETH ≈ $15.40'}
+  document.getElementById('deploy-cost').textContent=costs[document.getElementById('deploy-chain').value]||'—'
+}
+
+function copyAddr(){
+  const addr=document.getElementById('deploy-addr').textContent
+  navigator.clipboard.writeText(addr).then(()=>{
+    const btn=document.querySelector('.copy-btn')
+    btn.textContent='✓ Copied!'
+    setTimeout(()=>btn.textContent='📋 Copy Address',2000)
+  })
+}
+
+function timeAgo(ts){
+  if(!ts)return'—'
+  const s=Math.floor(Date.now()/1000)-(typeof ts==='number'?ts:ts/1000)
+  if(s<60)return s+'s ago'
+  if(s<3600)return Math.floor(s/60)+'m ago'
+  return Math.floor(s/3600)+'h ago'
+}
+
+function fmtTime(s){
+  if(s<60)return s+'s'
+  if(s<3600)return Math.floor(s/60)+'m '+s%60+'s'
+  return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m'
+}
+</script>
+</body>
+</html>
