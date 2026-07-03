@@ -64,9 +64,25 @@ class ChainWS {
 
 const _r={}, _ws={}
 export function initRPC(chains){
-  Object.values(chains).forEach(c=>{
-    _r[c.name]=new Router(c.name,c.rpcH)
-    _ws[c.name]=new ChainWS(c.name,c.tier||3).start([c.rpcW,...(FREE[c.name]?.map(u=>u.replace('https://','wss://').replace('http://','ws://'))||[])])
+  // FIX: chain config objects (from chains.js CHAINS / initChains()) do NOT
+  // carry a `.name` field on themselves — the name only exists as the object
+  // KEY (e.g. CHAINS.arbitrum = {id:42161, native:'ETH', ...}, no `name` inside).
+  // The old code did Object.values(chains).forEach(c => _r[c.name]=...), so
+  // c.name was undefined for every chain — every router/websocket collapsed
+  // onto the single key _r[undefined], overwriting each other on every
+  // iteration. _r['base'], _r['polygon'], _r['arbitrum'] never actually
+  // existed. rpcCall('base', ...) then hit the `?? Promise.reject('No router:
+  // base')` fallback on every single call — which is what the watchdog was
+  // reporting as "All RPCs unreachable", even when the RPC providers
+  // themselves were completely healthy. Same root cause broke getWS() for
+  // the scanner and vaults (0 gaps detected, no mega-swap events — nothing
+  // was ever actually subscribed).
+  //
+  // Using Object.entries() ties each router/socket to its real chain-name
+  // key instead of a property that was never populated.
+  Object.entries(chains).forEach(([name,c])=>{
+    _r[name]=new Router(name,c.rpcH)
+    _ws[name]=new ChainWS(name,c.tier||3).start([c.rpcW,...(FREE[name]?.map(u=>u.replace('https://','wss://').replace('http://','ws://'))||[])])
   })
   console.log(`[RPC] ${Object.keys(chains).length} chains · WebSocket + HTTP fallback`)
 }
