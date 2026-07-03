@@ -1,15 +1,31 @@
+// ═══════════════════════════════════════════════════════════════════════════
 // Vanguard dashboard.js
 // Serves Nightfall (desktop) + Nightfall Black (mobile)
 // 100% accurate data — only from DB, no estimates
 // CoW solver endpoint at /solve/:env/:network
 //
-// FIX: WebSocket connections were going silently dead behind Railway's proxy
-// (idle connections get torn down without a close frame reaching the client),
-// and buildState() failures inside the broadcast loop were swallowed with
-// catch{} — so a bad tick could go unnoticed forever. This version adds a
-// ping/pong heartbeat that kills zombie sockets, logs buildState() errors,
-// and — critically — no longer trusts the client to rely on WS alone
-// (see the paired HTML fix: it now polls /api/state on its own timer too).
+// FIX (websocket freeze bug): WebSocket connections were going silently dead
+// behind Railway's proxy (idle connections get torn down without a close
+// frame reaching the client), and buildState() failures inside the broadcast
+// loop were swallowed with catch{} — so a bad tick could go unnoticed
+// forever. The dashboard would render once successfully, then freeze on that
+// stale snapshot with no error and no recovery.
+//
+// This file has two parts:
+//   PART 1 (below)  — the server: src/dashboard.js
+//                      Drop this in as a full replacement.
+//   PART 2 (bottom) — the client patch: replace the existing connect()
+//                      function inside the <script> block of BOTH
+//                      src/dashboard/nightfall.html and
+//                      src/dashboard/nightfall-black.html with the code
+//                      in the PART 2 block below. Everything else in
+//                      those HTML files (render(), fmt(), etc.) stays
+//                      the same.
+// ═══════════════════════════════════════════════════════════════════════════
+
+
+// ─── PART 1: SERVER — src/dashboard.js ─────────────────────────────────────
+
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
@@ -217,3 +233,76 @@ export function startDashboard() {
 process.on('SIGTERM', () => clearInterval(_heartbeat))
 
 export { buildState, broadcast }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PART 2: CLIENT PATCH — for nightfall.html AND nightfall-black.html
+   ═══════════════════════════════════════════════════════════════════════════
+
+   This is NOT server code — it does not belong in dashboard.js at runtime.
+   It is reference code to copy into the <script> block of BOTH HTML files,
+   replacing their existing `connect()` function (and the loose `_ws, _state`
+   declaration above it). Everything else in those files — render(), fmt(),
+   fmtT(), fmtUp(), set(), nav()/showTab(), etc. — stays exactly as-is.
+
+   WHY: the old client fetched /api/state exactly once, on connect, then
+   relied entirely on the WebSocket for every update after that. If the
+   socket goes idle-dead behind Railway's proxy (readyState stays OPEN,
+   no close event ever fires), the dashboard freezes on whatever it last
+   received — one good render, then nothing, forever. That's exactly the
+   symptom reported: real AI text rendered once, everything else stuck.
+
+   FIX: poll /api/state on its own independent 5s timer regardless of WS
+   health. The WebSocket becomes a "get updates faster than 5s" optimization
+   instead of a single point of failure. A watchdog also detects a socket
+   that's gone quiet despite claiming to be open, and forces a reconnect.
+
+   ---------------------------------------------------------------------------
+
+   let _ws, _state = {}
+   let _lastMsgAt = Date.now()
+   let _pollTimer = null
+   let _wsCheckTimer = null
+
+   function connect() {
+     startPolling()      // <-- always-on fallback, independent of WS health
+     connectWS()
+   }
+
+   function startPolling() {
+     if (_pollTimer) return
+     const poll = () => fetch('/api/state').then(r => r.json()).then(render).catch(() => {})
+     poll()
+     _pollTimer = setInterval(poll, 5000)
+   }
+
+   function connectWS() {
+     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+     _ws = new WebSocket(`${proto}//${location.host}`)
+
+     _ws.onopen = () => { _lastMsgAt = Date.now() }
+
+     _ws.onmessage = e => {
+       _lastMsgAt = Date.now()
+       try {
+         const m = JSON.parse(e.data)
+         if (m.data) render(m.data)
+       } catch {}
+     }
+
+     _ws.onclose = () => setTimeout(connectWS, 3000)
+     _ws.onerror = () => _ws.close()
+
+     // Watchdog: if we haven't heard from the socket in 30s despite it
+     // claiming to be OPEN, it's a zombie connection (proxy silently
+     // dropped it). Force-close and let onclose reconnect. Polling keeps
+     // the UI fresh in the meantime either way.
+     if (_wsCheckTimer) clearInterval(_wsCheckTimer)
+     _wsCheckTimer = setInterval(() => {
+       if (_ws.readyState === 1 && Date.now() - _lastMsgAt > 30000) {
+         _ws.close()
+       }
+     }, 10000)
+   }
+
+   --------------------------------------------------------------------------- */
