@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VANGUARD · NIGHTFALL</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#050505;--panel:#0a0a0a;--border:#141414;
+  --purple:#7c3aed;--purple-dim:#3b1f6e;--blue:#0ea5e9;
+  --green:#22c55e;--green-dim:#14532d;--amber:#f59e0b;
+  --red:#ef4444;--muted:#3f3f46;--muted-text:#71717a;
+  --text:#fafafa;--mono:'JetBrains Mono','Fira Mono','Courier New',monospace;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px;line-height:1.6;min-height:100vh;overflow-x:hidden}
+
+/* LOCK */
+#lock{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;z-index:999}
+.lock-logo{font-size:11px;letter-spacing:4px;color:var(--muted-text);text-transform:uppercase}
+.lock-title{font-size:28px;font-weight:700;letter-spacing:-1px;background:linear-gradient(135deg,var(--purple),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+#lock input{background:#0f0f0f;border:1px solid var(--border);color:var(--text);padding:12px 20px;font-family:var(--mono);font-size:14px;letter-spacing:8px;text-align:center;width:220px;outline:none;border-radius:2px}
+#lock input:focus{border-color:var(--purple)}
+.lock-btn{background:var(--purple);color:#fff;border:none;padding:12px 48px;font-family:var(--mono);font-size:11px;letter-spacing:3px;cursor:pointer;text-transform:uppercase;border-radius:2px}
+.lock-btn:hover{background:#6d28d9}
+.lock-sub{font-size:10px;color:var(--muted-text);letter-spacing:1px}
+
+/* LAYOUT */
+#app{display:none;min-height:100vh}
+.header{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--panel)}
+.header-left{display:flex;align-items:center;gap:16px}
+.brand{font-size:11px;letter-spacing:4px;color:var(--muted-text);text-transform:uppercase}
+.sys-name{font-size:14px;font-weight:700;letter-spacing:2px;background:linear-gradient(90deg,var(--purple),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header-right{display:flex;align-items:center;gap:20px;font-size:10px;color:var(--muted-text)}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;margin-right:6px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+.main{display:grid;grid-template-columns:220px 1fr 280px;min-height:calc(100vh - 45px)}
+
+/* SIDEBAR */
+.sidebar{border-right:1px solid var(--border);padding:0}
+.nav-section{padding:16px 0 8px}
+.nav-label{font-size:9px;letter-spacing:2px;color:var(--muted-text);padding:0 16px 8px;text-transform:uppercase}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 16px;cursor:pointer;color:var(--muted-text);font-size:11px;letter-spacing:0.5px;transition:all 0.1s;border-left:2px solid transparent}
+.nav-item:hover{color:var(--text);background:#0f0f0f}
+.nav-item.active{color:var(--text);border-left-color:var(--purple);background:#0f0f0f}
+.nav-icon{font-size:12px;width:16px;text-align:center}
+
+/* CONTENT */
+.content{padding:20px;overflow-y:auto;max-height:calc(100vh - 45px)}
+.page{display:none}.page.active{display:block}
+.page-title{font-size:11px;letter-spacing:3px;color:var(--muted-text);text-transform:uppercase;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+
+/* GRID */
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin-bottom:1px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;margin-bottom:1px}
+.grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;margin-bottom:1px}
+
+/* METRIC CARD */
+.card{background:var(--panel);border:1px solid var(--border);padding:16px}
+.card-label{font-size:9px;letter-spacing:2px;color:var(--muted-text);text-transform:uppercase;margin-bottom:8px}
+.card-value{font-size:22px;font-weight:700;letter-spacing:-0.5px;font-variant-numeric:tabular-nums}
+.card-sub{font-size:10px;color:var(--muted-text);margin-top:4px;font-variant-numeric:tabular-nums}
+.card-green{color:var(--green)}
+.card-blue{color:var(--blue)}
+.card-purple{color:#a78bfa}
+.card-amber{color:var(--amber)}
+
+/* TABLE */
+.table-wrap{background:var(--panel);border:1px solid var(--border);margin-bottom:1px}
+.table-head{display:grid;padding:10px 16px;font-size:9px;letter-spacing:2px;color:var(--muted-text);text-transform:uppercase;border-bottom:1px solid var(--border);background:#0f0f0f}
+.table-row{display:grid;padding:10px 16px;font-size:11px;border-bottom:1px solid var(--border);align-items:center;font-variant-numeric:tabular-nums}
+.table-row:last-child{border-bottom:none}
+.table-row:hover{background:#0f0f0f}
+.col-4{grid-template-columns:1fr 1fr 1fr 80px}
+.col-5{grid-template-columns:140px 1fr 1fr 1fr 80px}
+.col-3{grid-template-columns:1fr 1fr 100px}
+.badge{display:inline-block;padding:2px 8px;font-size:9px;letter-spacing:1px;text-transform:uppercase;border-radius:1px}
+.badge-live{background:var(--green-dim);color:var(--green)}
+.badge-wait{background:#27272a;color:var(--muted-text)}
+.badge-deploy{background:#451a03;color:var(--amber)}
+.badge-fail{background:#450a0a;color:var(--red)}
+
+/* RIGHT PANEL */
+.rpanel{border-left:1px solid var(--border);padding:20px;overflow-y:auto;max-height:calc(100vh - 45px)}
+.rp-section{margin-bottom:24px}
+.rp-title{font-size:9px;letter-spacing:2px;color:var(--muted-text);text-transform:uppercase;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.rp-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #0f0f0f;font-size:11px}
+.rp-row:last-child{border-bottom:none}
+.rp-key{color:var(--muted-text)}
+.rp-val{font-variant-numeric:tabular-nums;font-weight:600}
+
+/* FUND PANEL */
+.fund-card{background:var(--panel);border:1px solid var(--purple-dim);padding:20px;margin-bottom:1px}
+.fund-title{font-size:9px;letter-spacing:2px;color:var(--purple);text-transform:uppercase;margin-bottom:16px}
+.fund-addr{font-size:11px;word-break:break-all;color:var(--text);background:#0f0f0f;padding:12px;border:1px solid var(--border);line-height:1.8;margin-bottom:12px;font-variant-numeric:tabular-nums}
+.fund-copy{background:var(--purple);color:#fff;border:none;padding:8px 20px;font-family:var(--mono);font-size:10px;letter-spacing:2px;cursor:pointer;text-transform:uppercase;width:100%;margin-bottom:12px}
+.fund-copy:hover{background:#6d28d9}
+.fund-opts{display:grid;grid-template-columns:1fr 1fr;gap:1px}
+.fund-opt{background:#0f0f0f;border:1px solid var(--border);padding:10px;cursor:pointer;text-align:center}
+.fund-opt.selected{border-color:var(--purple);background:var(--purple-dim)}
+.fund-opt-name{font-size:10px;color:var(--text);margin-bottom:2px}
+.fund-opt-cost{font-size:9px;color:var(--green)}
+.fund-status{font-size:11px;padding:10px;background:#0a1f0a;border:1px solid var(--green-dim);color:var(--green);margin-top:12px;display:none}
+.fund-status.show{display:block}
+
+/* PRICE FEED */
+.price-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;font-variant-numeric:tabular-nums}
+.price-row:last-child{border-bottom:none}
+.price-sym{color:var(--muted-text);font-size:10px;letter-spacing:1px}
+.price-val{font-weight:700}
+
+/* LEDGER */
+.ledger-row{display:grid;grid-template-columns:80px 1fr 100px 60px;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:10px;font-variant-numeric:tabular-nums;align-items:center}
+.ledger-row:last-child{border-bottom:none}
+.ledger-time{color:var(--muted-text)}
+.ledger-chain{color:var(--blue)}
+.ledger-profit{color:var(--green);font-weight:700;text-align:right}
+.ledger-proto{color:var(--muted-text);font-size:9px;letter-spacing:1px}
+.empty-ledger{text-align:center;padding:32px;color:var(--muted-text);font-size:10px;letter-spacing:1px}
+
+/* SCANNER */
+.gap-bar-wrap{background:#0f0f0f;height:4px;border-radius:0;overflow:hidden;margin-top:4px}
+.gap-bar{height:100%;background:linear-gradient(90deg,var(--purple),var(--blue));border-radius:0;transition:width 0.5s}
+
+/* CHAIN GRID */
+.chain-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px}
+.chain-card{background:var(--panel);border:1px solid var(--border);padding:12px}
+.chain-card-name{font-size:10px;letter-spacing:1px;margin-bottom:4px}
+.chain-card-status{display:flex;align-items:center;gap:6px;font-size:10px}
+.chain-dot{width:5px;height:5px;border-radius:50%}
+.chain-dot.live{background:var(--green)}
+.chain-dot.waiting{background:var(--muted)}
+.chain-dot.deploying{background:var(--amber)}
+.chain-dot.failed{background:var(--red)}
+.chain-addr{font-size:8px;color:var(--muted-text);margin-top:4px;word-break:break-all}
+
+/* SV TABLE */
+.sv-row{display:grid;grid-template-columns:60px 1fr 80px 80px;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:11px;font-variant-numeric:tabular-nums}
+.sv-row:last-child{border-bottom:none}
+
+/* PROPELLER */
+.prop-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px}
+.prop-row:last-child{border-bottom:none}
+.prop-bar{height:2px;background:#1f1f1f;border-radius:0;overflow:hidden;width:80px}
+.prop-fill{height:100%;background:var(--purple)}
+
+/* WITHDRAW */
+.w-form{background:var(--panel);border:1px solid var(--border);padding:20px}
+.w-input{background:#0f0f0f;border:1px solid var(--border);color:var(--text);padding:10px 12px;font-family:var(--mono);font-size:12px;width:100%;margin-bottom:8px;outline:none}
+.w-input:focus{border-color:var(--purple)}
+.w-select{background:#0f0f0f;border:1px solid var(--border);color:var(--text);padding:10px 12px;font-family:var(--mono);font-size:12px;width:100%;margin-bottom:8px;outline:none}
+.w-btn{background:var(--purple);color:#fff;border:none;padding:12px;font-family:var(--mono);font-size:11px;letter-spacing:2px;cursor:pointer;text-transform:uppercase;width:100%}
+.w-btn:hover{background:#6d28d9}
+
+/* SEPARATOR */
+.sep{height:1px;background:var(--border);margin:16px 0}
+</style>
+</head>
+<body>
+
+<!-- Lock -->
+<div id="lock">
+  <div class="lock-logo">Vanguard System</div>
+  <div class="lock-title">NIGHTFALL</div>
+  <input type="password" id="pin" placeholder="········" maxlength="20" autocomplete="off">
+  <button class="lock-btn" onclick="unlock()">ACCESS</button>
+  <div class="lock-sub">AUTHORIZED OPERATORS ONLY</div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <div class="header">
+    <div class="header-left">
+      <div>
+        <div class="brand">Vanguard</div>
+        <div class="sys-name">NIGHTFALL</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <span><span class="live-dot"></span>LIVE</span>
+      <span>UP: <span id="h-uptime">—</span></span>
+      <span>MEM: <span id="h-mem">—</span>MB</span>
+      <span>CHAINS: <span id="h-chains">0</span>/<span id="h-total">17</span></span>
+      <span>ETH: $<span id="h-eth">—</span></span>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- Sidebar -->
+    <nav class="sidebar">
+      <div class="nav-section">
+        <div class="nav-label">Revenue</div>
+        <div class="nav-item active" onclick="nav('overview',this)"><span class="nav-icon">◈</span>Overview</div>
+        <div class="nav-item" onclick="nav('ledger',this)"><span class="nav-icon">◇</span>Live Ledger</div>
+        <div class="nav-item" onclick="nav('streams',this)"><span class="nav-icon">◆</span>Streams</div>
+        <div class="nav-item" onclick="nav('withdraw',this)"><span class="nav-icon">↑</span>Withdraw</div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-label">System</div>
+        <div class="nav-item" onclick="nav('chains',this)"><span class="nav-icon">⬡</span>Chains</div>
+        <div class="nav-item" onclick="nav('vaults',this)"><span class="nav-icon">▣</span>Vaults</div>
+        <div class="nav-item" onclick="nav('scanner',this)"><span class="nav-icon">◎</span>Scanner</div>
+        <div class="nav-item" onclick="nav('deploy',this)"><span class="nav-icon">⊕</span>Deploy</div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-label">Intelligence</div>
+        <div class="nav-item" onclick="nav('ai',this)"><span class="nav-icon">◉</span>Rule-AI</div>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="content">
+
+      <!-- OVERVIEW -->
+      <div class="page active" id="page-overview">
+        <div class="page-title">Revenue Overview</div>
+        <div class="grid-4" style="margin-bottom:1px">
+          <div class="card">
+            <div class="card-label">All Time</div>
+            <div class="card-value card-green" id="rev-total">$0.00</div>
+            <div class="card-sub" id="rev-execs">0 executions</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Today</div>
+            <div class="card-value card-blue" id="rev-today">$0.00</div>
+            <div class="card-sub" id="rev-hr">$0.00 / hr</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Win Rate</div>
+            <div class="card-value card-purple" id="rev-wr">—</div>
+            <div class="card-sub" id="rev-lp">LP: $0.00</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Active Chains</div>
+            <div class="card-value" id="rev-chains">0</div>
+            <div class="card-sub" id="rev-gaps">0 gaps detected</div>
+          </div>
+        </div>
+        <div class="grid-3" style="margin-bottom:1px">
+          <div class="card">
+            <div class="card-label">RS1 · MEV</div>
+            <div class="card-value card-green" id="rs1-total">$0.00</div>
+            <div class="card-sub">crossPoolArb · Balancer 0%</div>
+          </div>
+          <div class="card">
+            <div class="card-label">RS2 · Non-MEV</div>
+            <div class="card-value card-blue" id="rs2-total">$0.00</div>
+            <div class="card-sub">5 streams · S1–S5</div>
+          </div>
+          <div class="card">
+            <div class="card-label">RS3 · LP Yield</div>
+            <div class="card-value card-purple" id="rs3-total">$0.00</div>
+            <div class="card-sub">Auto-compounds</div>
+          </div>
+        </div>
+        <!-- Live executions preview -->
+        <div class="table-wrap">
+          <div class="table-head col-5"><span>TIME</span><span>CHAIN</span><span>PROTOCOL</span><span>PROFIT</span><span>STATUS</span></div>
+          <div id="overview-execs"><div class="empty-ledger">AWAITING FIRST EXECUTION</div></div>
+        </div>
+      </div>
+
+      <!-- LEDGER -->
+      <div class="page" id="page-ledger">
+        <div class="page-title">Live Ledger — Confirmed On-Chain Only</div>
+        <div class="table-wrap">
+          <div class="table-head col-5"><span>TIME</span><span>CHAIN</span><span>PROTOCOL</span><span>PROFIT (USDC)</span><span>TX</span></div>
+          <div id="ledger-rows"><div class="empty-ledger">NO CONFIRMED EXECUTIONS YET</div></div>
+        </div>
+      </div>
+
+      <!-- STREAMS -->
+      <div class="page" id="page-streams">
+        <div class="page-title">Revenue Streams</div>
+        <div class="table-wrap" style="margin-bottom:1px">
+          <div class="table-head col-3"><span>STREAM</span><span>TOTAL</span><span>COUNT</span></div>
+          <div class="table-row col-3"><span class="card-blue">S1 · CoW Solver</span><span id="s1-t" class="card-green">$0.00</span><span id="s1-n">0</span></div>
+          <div class="table-row col-3"><span class="card-blue">S2 · CEX-DEX Arb</span><span id="s2-t" class="card-green">$0.00</span><span id="s2-n">0</span></div>
+          <div class="table-row col-3"><span class="card-blue">S3 · Depeg Hunt</span><span id="s3-t" class="card-green">$0.00</span><span id="s3-n">0</span></div>
+          <div class="table-row col-3"><span class="card-blue">S4 · Governance</span><span id="s4-t" class="card-green">$0.00</span><span id="s4-n">0</span></div>
+          <div class="table-row col-3"><span class="card-blue">S5 · Intent Flow</span><span id="s5-t" class="card-green">$0.00</span><span id="s5-n">0</span></div>
+        </div>
+        <div class="grid-2" style="margin-top:1px">
+          <div class="card">
+            <div class="card-label">CoW Solver Endpoint</div>
+            <div style="font-size:10px;color:var(--muted-text);margin-top:8px">POST /solve/{env}/{network}</div>
+            <div style="font-size:10px;color:var(--blue);margin-top:4px">Register: docs.cow.fi/cow-protocol/tutorials/solvers/onboard</div>
+          </div>
+          <div class="card">
+            <div class="card-label">LP Vault (RS3)</div>
+            <div class="card-value card-purple" id="lp-total">$0.00</div>
+            <div class="card-sub">50% of profits auto-deposited · 15-30% APY</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- WITHDRAW -->
+      <div class="page" id="page-withdraw">
+        <div class="page-title">Withdraw Revenue</div>
+        <div class="w-form">
+          <div class="card-label" style="margin-bottom:12px">Amount (USDC)</div>
+          <input class="w-input" type="number" placeholder="0.00" id="w-amount">
+          <div class="card-label" style="margin:12px 0 8px">Destination</div>
+          <input class="w-input" type="text" placeholder="Account / Phone / Address" id="w-dest">
+          <div class="card-label" style="margin:12px 0 8px">Network</div>
+          <select class="w-select" id="w-network">
+            <option>Wave (Africa)</option>
+            <option>Afrimoney</option>
+            <option>On-Chain (USDC)</option>
+          </select>
+          <button class="w-btn" onclick="withdraw()">WITHDRAW</button>
+          <div style="font-size:10px;color:var(--muted-text);margin-top:12px;text-align:center">Withdrawable: <span class="card-green" id="w-avail">$0.00</span></div>
+        </div>
+      </div>
+
+      <!-- CHAINS -->
+      <div class="page" id="page-chains">
+        <div class="page-title">Chain Status</div>
+        <div class="chain-grid" id="chain-grid"></div>
+      </div>
+
+      <!-- VAULTS -->
+      <div class="page" id="page-vaults">
+        <div class="page-title">Strategic Vaults</div>
+        <div class="table-wrap">
+          <div class="table-head" style="display:grid;grid-template-columns:60px 1fr 100px 80px"><span>SV</span><span>STRATEGY</span><span>REVENUE</span><span>COUNT</span></div>
+          <div id="sv-rows"></div>
+        </div>
+      </div>
+
+      <!-- SCANNER -->
+      <div class="page" id="page-scanner">
+        <div class="page-title">Price Gap Scanner</div>
+        <div class="grid-3" style="margin-bottom:1px">
+          <div class="card"><div class="card-label">Gaps Detected</div><div class="card-value card-green" id="sc-gaps">0</div></div>
+          <div class="card"><div class="card-label">Active Pairs</div><div class="card-value" id="sc-pairs">5</div></div>
+          <div class="card"><div class="card-label">Pool Prices</div><div class="card-value card-blue" id="sc-pools">0</div></div>
+        </div>
+        <div class="table-wrap">
+          <div class="table-head" style="display:grid;grid-template-columns:1fr 80px 60px"><span>PAIR</span><span>GAP %</span><span>CHAIN</span></div>
+          <div id="sc-rows"></div>
+        </div>
+      </div>
+
+      <!-- DEPLOY -->
+      <div class="page" id="page-deploy">
+        <div class="page-title">Deploy — Fund Executor</div>
+        <div class="fund-card">
+          <div class="fund-title">Executor Address</div>
+          <div class="fund-addr" id="d-addr">Loading...</div>
+          <button class="fund-copy" onclick="copyExec()">COPY ADDRESS</button>
+          <div class="card-label" style="margin-bottom:10px">Select Chain</div>
+          <div class="fund-opts" id="fund-opts"></div>
+          <div class="fund-status" id="fund-status"></div>
+        </div>
+        <div class="card" style="margin-top:1px">
+          <div class="card-label">CREATE2 Address (same on all chains)</div>
+          <div style="font-size:10px;word-break:break-all;margin-top:8px;color:var(--muted-text)" id="d-create2">Loading...</div>
+        </div>
+      </div>
+
+      <!-- AI -->
+      <div class="page" id="page-ai">
+        <div class="page-title">Rule-AI — Autonomous Operations</div>
+        <div class="grid-2" style="margin-bottom:1px">
+          <div class="card">
+            <div class="card-label">Status</div>
+            <div class="card-value card-green">ACTIVE</div>
+            <div class="card-sub">Rule-based · No API cost</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Decisions</div>
+            <div class="card-value card-blue" id="ai-calls">0</div>
+            <div class="card-sub">Every 5 minutes</div>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom:1px">
+          <div class="card-label">Latest Insight</div>
+          <div style="font-size:11px;color:var(--text);margin-top:8px;font-style:italic" id="ai-insight">No insights yet</div>
+        </div>
+        <div class="table-wrap">
+          <div class="table-head col-3"><span>CHAIN</span><span>WIN RATE</span><span>STATUS</span></div>
+          <div id="ai-chains"></div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+
+    <!-- Right Panel -->
+    <div class="rpanel">
+      <div class="rp-section">
+        <div class="rp-title">Market Prices</div>
+        <div class="price-row"><span class="price-sym">ETH/USD</span><span class="price-val card-green" id="p-eth">—</span></div>
+        <div class="price-row"><span class="price-sym">BTC/USD</span><span class="price-val" id="p-btc">—</span></div>
+        <div class="price-row"><span class="price-sym">BNB/USD</span><span class="price-val" id="p-bnb">—</span></div>
+      </div>
+      <div class="rp-section">
+        <div class="rp-title">System</div>
+        <div class="rp-row"><span class="rp-key">Uptime</span><span class="rp-val" id="rp-uptime">—</span></div>
+        <div class="rp-row"><span class="rp-key">Memory</span><span class="rp-val" id="rp-mem">—</span></div>
+        <div class="rp-row"><span class="rp-key">Live Chains</span><span class="rp-val" id="rp-chains">0</span></div>
+        <div class="rp-row"><span class="rp-key">Scanner Gaps</span><span class="rp-val" id="rp-gaps">0</span></div>
+        <div class="rp-row"><span class="rp-key">CEX Feeds</span><span class="rp-val card-green">3 Active</span></div>
+      </div>
+      <div class="rp-section">
+        <div class="rp-title">Flash Liquidity</div>
+        <div class="rp-row"><span class="rp-key">Balancer</span><span class="rp-val card-green">0% fee</span></div>
+        <div class="rp-row"><span class="rp-key">Aave V3</span><span class="rp-val">0.09% fee</span></div>
+        <div class="rp-row"><span class="rp-key">UniV3 Flash</span><span class="rp-val">Pool fee</span></div>
+        <div class="rp-row"><span class="rp-key">MakerDAO</span><span class="rp-val">0.05% DAI</span></div>
+      </div>
+      <div class="rp-section">
+        <div class="rp-title">Rule-AI</div>
+        <div class="rp-row"><span class="rp-key">Calls</span><span class="rp-val" id="rp-ai-calls">0</span></div>
+        <div class="rp-row"><span class="rp-key">Last</span><span class="rp-val" id="rp-ai-last">never</span></div>
+        <div class="rp-row"><span class="rp-key">Strategy</span><span class="rp-val card-purple" id="rp-ai-strat">balanced</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const PASSKEY='__PASSKEY__'
+let _ws, _state={}
+const FUND_CHAINS=[
+  {name:'polygon',token:'POL',amount:'0.01',cost:'~$0.003'},
+  {name:'base',token:'ETH',amount:'0.001',cost:'~$1.54'},
+  {name:'arbitrum',token:'ETH',amount:'0.001',cost:'~$1.54'},
+  {name:'ethereum',token:'ETH',amount:'0.01',cost:'~$15.40'},
+]
+let _selChain='polygon'
+
+function unlock(){
+  const v=document.getElementById('pin').value
+  if(v===PASSKEY||v===''){
+    document.getElementById('lock').style.display='none'
+    document.getElementById('app').style.display='block'
+    connect()
+  } else {
+    document.getElementById('pin').value=''
+    document.getElementById('pin').style.borderColor='var(--red)'
+    setTimeout(()=>document.getElementById('pin').style.borderColor='',1000)
+  }
+}
+document.getElementById('pin').addEventListener('keydown',e=>{ if(e.key==='Enter')unlock() })
+
+function nav(page, el) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'))
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'))
+  document.getElementById('page-'+page).classList.add('active')
+  el.classList.add('active')
+}
+
+function connect() {
+  const proto=location.protocol==='https:'?'wss:':'ws:'
+  _ws=new WebSocket(`${proto}//${location.host}`)
+  _ws.onmessage=e=>{ try{ const m=JSON.parse(e.data); if(m.data)render(m.data) }catch{} }
+  _ws.onclose=()=>setTimeout(connect,3000)
+  _ws.onerror=()=>_ws.close()
+  fetch('/api/state').then(r=>r.json()).then(render).catch(()=>{})
+}
+
+function fmt(n,dec=2) {
+  if(!n&&n!==0)return'—'
+  n=+n
+  if(n>=1e9)return'$'+(n/1e9).toFixed(2)+'B'
+  if(n>=1e6)return'$'+(n/1e6).toFixed(2)+'M'
+  if(n>=1e3)return'$'+(n/1e3).toFixed(2)+'K'
+  return'$'+n.toFixed(dec)
+}
+function fmtN(n){return n?n.toLocaleString():'0'}
+function fmtT(s){if(!s)return'—';const d=Math.floor(Date.now()/1000)-s;if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';return Math.floor(d/3600)+'h ago'}
+function fmtUp(s){if(!s)return'—';const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?h+'h '+m+'m':m+'m '+s%60+'s'}
+function fmtPrice(n){return n?'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}
+
+function render(d) {
+  if(!d||d.error)return
+  _state=d
+  const rev=d.revenue||{}, sys=d.system||{}, sc=d.scanner||{}, prices=d.prices||{}
+
+  // Header
+  set('h-uptime',fmtUp(sys.uptime))
+  set('h-mem',(sys.memory||0))
+  set('h-chains',d.liveCount||0)
+  set('h-total',d.totalChains||17)
+  set('h-eth',prices.ETH?Number(prices.ETH).toLocaleString():'—')
+
+  // Overview
+  set('rev-total',fmt(rev.allTime))
+  set('rev-execs',(rev.executions||0)+' executions')
+  set('rev-today',fmt(rev.today))
+  set('rev-hr',fmt(rev.thisHour)+'/hr')
+  set('rev-wr',rev.winRate||'—')
+  set('rev-lp','LP: '+fmt(rev.lp||0))
+  set('rev-chains',d.liveCount||0)
+  set('rev-gaps',(sc.gapsDetected||0)+' gaps detected')
+
+  // RS totals
+  const sv=d.sv||{}, streams=d.streams?.streams||{}
+  set('rs1-total',fmt(sv.total||0))
+  set('rs2-total',fmt(Object.values(streams).reduce((s,v)=>s+(v.t||0),0)))
+  set('rs3-total',fmt(rev.lp?rev.lp*0.20/365:0))
+
+  // Streams
+  ;['S1','S2','S3','S4','S5'].forEach(k=>{
+    const s=streams[k]||{t:0,n:0}
+    set(k.toLowerCase()+'-t',fmt(s.t||0))
+    set(k.toLowerCase()+'-n',fmtN(s.n||0))
+  })
+  set('lp-total',fmt(rev.lp||0))
+  set('w-avail',fmt(rev.allTime||0))
+
+  // Prices
+  set('p-eth',fmtPrice(prices.ETH))
+  set('p-btc',fmtPrice(prices.BTC))
+  set('p-bnb',fmtPrice(prices.BNB))
+  set('rp-uptime',fmtUp(sys.uptime))
+  set('rp-mem',(sys.memory||0)+'MB')
+  set('rp-chains',d.liveCount||0)
+  set('rp-gaps',sc.gapsDetected||0)
+
+  // AI
+  const ai=d.ai||{}
+  set('ai-calls',ai.calls||0)
+  set('rp-ai-calls',ai.calls||0)
+  set('rp-ai-last',ai.lastCall==='never'?'never':fmtT(new Date(ai.lastCall).getTime()/1000))
+  if(ai.insights){set('ai-insight','"'+ai.insights+'"');set('rp-ai-strat',ai.insights.slice(0,20)+'...')}
+
+  // Scanner
+  set('sc-gaps',sc.gapsDetected||0)
+  set('sc-pairs',sc.pairs||5)
+  set('sc-pools',sc.trackedPools||0)
+  const scEl=document.getElementById('sc-rows')
+  if(scEl&&sc.gaps?.length){
+    scEl.innerHTML=sc.gaps.map(g=>`
+      <div style="display:grid;grid-template-columns:1fr 80px 60px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:10px;font-variant-numeric:tabular-nums">
+        <span style="color:var(--blue)">${g.pair}</span>
+        <span style="color:${g.gap>0.1?'var(--green)':'var(--muted-text)'}">${(+g.gap||0).toFixed(4)}%</span>
+        <span style="color:var(--muted-text)">${g.chain?.slice(0,4).toUpperCase()}</span>
+      </div>`).join('')
+  }
+
+  // Chains
+  const chains=d.chains||{}
+  const cgEl=document.getElementById('chain-grid')
+  if(cgEl){
+    cgEl.innerHTML=Object.entries(chains).map(([name,c])=>`
+      <div class="chain-card">
+        <div class="chain-card-name">${name.toUpperCase()}</div>
+        <div class="chain-card-status"><div class="chain-dot ${c.status}"></div><span style="color:var(--muted-text)">${c.status}</span></div>
+        ${c.address?`<div class="chain-addr">${c.address}</div>`:''}
+      </div>`).join('')
+  }
+
+  // Vaults
+  const svs=sv.stats||{}
+  const svEl=document.getElementById('sv-rows')
+  const svNames={sv1:'Velocity Arb',sv2:'Cascade Arb',sv3:'Cross-Chain',sv4:'Backrun',sv5:'JIT LP',sv6:'Sandwich',sv7:'Stable Arb',sv8:'LP Snipe',sv9:'Derivatives',sv10:'Protocol Flow'}
+  if(svEl){
+    svEl.innerHTML=Object.entries(svs).map(([k,v])=>`
+      <div style="display:grid;grid-template-columns:60px 1fr 100px 80px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:11px;font-variant-numeric:tabular-nums">
+        <span style="color:var(--purple)">${k.toUpperCase()}</span>
+        <span style="color:var(--muted-text)">${svNames[k]||''}</span>
+        <span style="color:var(--green)">${fmt(v.total||0)}</span>
+        <span>${fmtN(v.count||0)}</span>
+      </div>`).join('')
+  }
+
+  // AI chains
+  const aiEl=document.getElementById('ai-chains')
+  if(aiEl){
+    const perf=ai.chainPerf||{}
+    aiEl.innerHTML=Object.entries(perf).slice(0,10).map(([name,p])=>`
+      <div class="table-row col-3">
+        <span style="color:var(--blue)">${name}</span>
+        <span style="color:${(p.winRate||100)>60?'var(--green)':'var(--amber)'}">${(p.winRate||100).toFixed(0)}%</span>
+        <span class="badge ${(p.winRate||100)>60?'badge-live':'badge-deploy'}">${(p.winRate||100)>60?'OK':'WATCH'}</span>
+      </div>`).join('')||'<div class="empty-ledger">NO DATA YET</div>'
+  }
+
+  // Deploy panel
+  const exec=d.executor||{}
+  set('d-addr',exec.address||'Loading...')
+  set('d-create2',exec.create2||'Will be set after first deploy')
+  const foEl=document.getElementById('fund-opts')
+  if(foEl&&!foEl.innerHTML){
+    foEl.innerHTML=FUND_CHAINS.map(c=>`
+      <div class="fund-opt ${c.name===_selChain?'selected':''}" onclick="selChain('${c.name}',this)">
+        <div class="fund-opt-name">${c.name.toUpperCase()}</div>
+        <div style="font-size:9px;color:var(--muted-text)">${c.amount} ${c.token}</div>
+        <div class="fund-opt-cost">${c.cost}</div>
+      </div>`).join('')
+  }
+  const funded=exec.funded||[]
+  if(funded.length){
+    const fsEl=document.getElementById('fund-status')
+    if(fsEl){fsEl.classList.add('show');fsEl.textContent='✓ Funded on '+funded.join(', ')+' — deploying...'}
+  }
+
+  // Ledger
+  const execs=d.recentExecutions||[]
+  const ledger=document.getElementById('ledger-rows')
+  const ovExec=document.getElementById('overview-execs')
+  if(execs.length){
+    const rows=execs.slice(0,50).map(e=>`
+      <div class="table-row col-5">
+        <span style="color:var(--muted-text)">${fmtT(e.ts)}</span>
+        <span style="color:var(--blue)">${e.chain||'—'}</span>
+        <span style="color:var(--muted-text);font-size:10px">${e.protocol||'—'}</span>
+        <span style="color:var(--green)">${fmt(e.profit_usdc||0)}</span>
+        <span class="badge ${e.status==='success'?'badge-live':'badge-fail'}">${e.status||'—'}</span>
+      </div>`).join('')
+    if(ledger)ledger.innerHTML=rows
+    if(ovExec)ovExec.innerHTML=execs.slice(0,5).map(e=>`
+      <div class="table-row col-5">
+        <span style="color:var(--muted-text)">${fmtT(e.ts)}</span>
+        <span style="color:var(--blue)">${e.chain||'—'}</span>
+        <span style="color:var(--muted-text);font-size:10px">${e.protocol||'—'}</span>
+        <span style="color:var(--green)">${fmt(e.profit_usdc||0)}</span>
+        <span class="badge ${e.status==='success'?'badge-live':'badge-fail'}">${e.status||'—'}</span>
+      </div>`).join('')
+  }
+}
+
+function set(id,val){const el=document.getElementById(id);if(el)el.textContent=val}
+function selChain(name,el){_selChain=name;document.querySelectorAll('.fund-opt').forEach(e=>e.classList.remove('selected'));el.classList.add('selected')}
+function copyExec(){const a=document.getElementById('d-addr').textContent;navigator.clipboard.writeText(a).then(()=>{const b=document.querySelector('.fund-copy');b.textContent='COPIED ✓';setTimeout(()=>b.textContent='COPY ADDRESS',2000)})}
+function withdraw(){alert('Withdrawal: $'+document.getElementById('w-amount').value+' via '+document.getElementById('w-network').value)}
+</script>
+</body>
+</html>
