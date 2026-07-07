@@ -1,1 +1,1 @@
-# X7-Protocol
+# VANGUARD
