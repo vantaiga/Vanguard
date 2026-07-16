@@ -1,17 +1,31 @@
 {
-  "name": "vanguard",
+  "name": "vanguard-protocol",
   "version": "1.0.0",
+  "description": "Sovereign DeFi Extraction System — NEXUS + APEX + SOVEREIGN",
   "type": "module",
   "main": "src/index.js",
-  "scripts": { "start": "node src/index.js" },
-  {
-  "dependencies": {
-    "@noble/curves": "^1.4.0",
-    "viem": "^2.0.0",
-    "ethers": "^6.0.0",
-    "ws": "^8.0.0",
-    "express": "^4.18.0",
-    "better-sqlite3": "^9.0.0"
+  "scripts": {
+    "start": "node --max-old-space-size=350 --max-semi-space-size=64 --expose-gc --no-concurrent-sweeping src/index.js",
+    "dev":   "node --max-old-space-size=350 --expose-gc src/index.js",
+    "build": "echo 'No build step — pure ESM'"
   },
-  "type": "module"
+  "dependencies": {
+    "@noble/curves":    "^1.4.0",
+    "better-sqlite3":   "^9.6.0",
+    "ethers":           "^6.13.0",
+    "express":          "^4.19.2",
+    "viem":             "^2.19.0",
+    "ws":               "^8.17.0"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url":  "https://github.com/vantaiga/Vanguard"
+  },
+  "author": "Bun Omar Secka",
+  "license": "UNLICENSED",
+  "private": true
 }
