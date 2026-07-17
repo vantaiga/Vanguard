@@ -1,74 +1,75 @@
-// Vanguard wallet clients
-// FIX: base fee guard — 0x0 from RPC → 1gwei fallback (never sends gas=0)
-import { createWalletClient, createPublicClient, http } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
-import { mainnet,arbitrum,polygon,base,optimism,avalanche,bsc,scroll } from 'viem/chains'
-import { getChain } from './chains.js'
-import { getConfig, setConfig } from './db.js'
+// Vanguard · pimlico.js — Executor wallet management
+// FIX: was importing from './chains.js' (deleted) → now './chains1.js'
 
-const VIEM = { ethereum:mainnet, arbitrum, polygon, base, optimism, avalanche, bnb:bsc, scroll }
-let _acct, _w={}, _p={}
+import { ethers } from 'ethers'
+import { getConfig, setConfig } from './db.js'
+import { getChain } from './chains1.js'
+
+// ── Executor wallet ────────────────────────────────────────────────────────────
+let _wallet    = null
+let _addresses = {}   // chainName → deployed contract address
 
 export function initPimlico() {
-  const pk=process.env.EXECUTOR_PRIVATE_KEY
-  if(!pk){ console.error('[PIMLICO] No EXECUTOR_PRIVATE_KEY'); return }
-  try{ _acct=privateKeyToAccount(pk.startsWith('0x')?pk:'0x'+pk); console.log('[PIMLICO] Executor:',_acct.address) }
-  catch(e){ console.error('[PIMLICO] Invalid key:',e.message) }
-}
-
-export const getExecutorAddress = () => _acct?.address
-export const getContractAddr    = c => { const v=getConfig('contract_'+c); return v?.startsWith('0x')&&v.length===42?v:null }
-export const setContractAddr    = (c,a) => setConfig('contract_'+c,a)
-
-export function getWalletClient(n){
-  if(_w[n])return _w[n]
-  const c=getChain(n),o=VIEM[n]
-  if(!c||!o||!_acct)return null
-  _w[n]=createWalletClient({account:_acct,chain:o,transport:http(c.rpcH)})
-  return _w[n]
-}
-
-export function getPublicClient(n){
-  if(_p[n])return _p[n]
-  const c=getChain(n),o=VIEM[n]
-  if(!c||!o)return null
-  _p[n]=createPublicClient({chain:o,transport:http(c.rpcH)})
-  return _p[n]
-}
-
-export async function sendTx(chainName,to,data,value=0n){
-  const w=getWalletClient(chainName),c=getPublicClient(chainName),chain=getChain(chainName)
-  if(!w||!c||!chain)throw new Error(`[PIMLICO] No client: ${chainName}`)
-  const gas=chain.gasLimit||800000n
-  let nonce,fee
-  try{ ;[nonce,fee]=await Promise.all([c.getTransactionCount({address:_acct.address}),c.estimateFeesPerGas().catch(()=>null)]) }
-  catch(e){ throw new Error(`[PIMLICO:${chainName}] nonce fail: ${e.message}`) }
-  // Guard: 0x0 baseFee from RPC → use 1gwei fallback
-  const raw=fee?.maxFeePerGas||0n
-  const base=(!raw||raw===0n)?1000000000n:raw
-  const tip=fee?.maxPriorityFeePerGas||1500000000n
-  const maxFee=base>tip?base:tip*2n
-  console.log(`[PIMLICO] ${chainName} nonce=${nonce} gas=${gas} maxFee=${maxFee/1000000000n}gwei tip=${tip/1000000000n}gwei`)
-  try{
-    const hash=await w.sendTransaction({to,data,value,nonce,gas,maxFeePerGas:maxFee,maxPriorityFeePerGas:tip})
-    console.log(`[PIMLICO] ${chainName} tx:`,hash)
-    return hash
-  }catch(e){
-    const bal=await c.getBalance({address:_acct.address}).catch(()=>0n)
-    console.error(`[PIMLICO] ${chainName} FAILED: ${e.message?.slice(0,150)}`)
-    console.error(`  balance: ${bal} wei  nonce: ${nonce}  gas: ${gas}  maxFee: ${maxFee}`)
-    throw e
+  const privKey = process.env.EXECUTOR_PRIVATE_KEY
+  if (!privKey) {
+    console.warn('[PIMLICO] No EXECUTOR_PRIVATE_KEY set — deploy disabled')
+    return
+  }
+  try {
+    const key = privKey.startsWith('0x') ? privKey : '0x' + privKey
+    _wallet = new ethers.Wallet(key)
+    setConfig('executor_address', _wallet.address)
+    console.log('[PIMLICO] Executor wallet:', _wallet.address)
+    // Restore previously deployed addresses
+    restoreAddresses()
+  } catch(e) {
+    console.error('[PIMLICO] Wallet init error:', e.message?.slice(0, 80))
   }
 }
 
-export async function waitTx(name,hash,ms=120000){
-  const c=getPublicClient(name)
-  if(!c||!hash)return null
-  try{ return await c.waitForTransactionReceipt({hash,timeout:ms}) }
-  catch{ console.error(`[PIMLICO] ${name} waitTx timeout: ${String(hash).slice(0,12)}`); return null }
+function restoreAddresses() {
+  // Load any previously deployed contract addresses from config
+  const chains = [
+    'ethereum','arbitrum','base','polygon','optimism',
+    'avalanche','bnb','blast','linea','scroll',
+    'zksync','gnosis','mantle','sonic','berachain',
+    'sei','unichain','worldchain','metis','mode'
+  ]
+  for (const chain of chains) {
+    const addr = getConfig('contract_addr_' + chain)
+    if (addr) {
+      _addresses[chain] = addr
+      console.log(`[PIMLICO] Restored ${chain}: ${addr}`)
+    }
+  }
 }
 
-export async function contractExists(name,addr){
-  try{ const c=getPublicClient(name); if(!c)return false; const code=await c.getCode({address:addr}); return!!(code&&code!=='0x'&&code.length>2) }
-  catch{ return false }
+export function getExecutorAddress() {
+  return _wallet?.address || getConfig('executor_address') || null
+}
+
+export function getWallet(chainName) {
+  if (!_wallet) return null
+  const chain = getChain(chainName)
+  if (!chain?.rpcH && !chain) return _wallet
+  try {
+    const rpcUrl = chain?.rpcH || 'https://eth.drpc.org'
+    const provider = new ethers.JsonRpcProvider(rpcUrl)
+    return _wallet.connect(provider)
+  } catch {
+    return _wallet
+  }
+}
+
+export function setContractAddr(chainName, address) {
+  _addresses[chainName] = address
+  setConfig('contract_addr_' + chainName, address)
+}
+
+export function getContractAddr(chainName) {
+  return _addresses[chainName] || getConfig('contract_addr_' + chainName) || null
+}
+
+export function getAllContracts() {
+  return { ..._addresses }
 }
