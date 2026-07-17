@@ -1,4 +1,0 @@
-# Force Node 22 — better-sqlite3 has prebuilt binaries for Node 22
-# nodejs_22 already includes npm — no separate npm package needed
-[phases.setup]
-nixPkgs = ["nodejs_22"]
