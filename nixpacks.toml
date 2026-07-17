@@ -1,4 +1,4 @@
 # Force Node 22 — better-sqlite3 has prebuilt binaries for Node 22
-# Node 24 has no prebuilt binary → node-gyp → Python → BUILD FAILS
+# nodejs_22 already includes npm — no separate npm package needed
 [phases.setup]
-nixPkgs = ["nodejs_22", "npm-9_x"]
+nixPkgs = ["nodejs_22"]
