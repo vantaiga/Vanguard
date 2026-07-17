@@ -1,13 +1,13 @@
 {
   "name": "vanguard-protocol",
   "version": "1.0.0",
-  "description": "Sovereign DeFi Extraction System — NEXUS + APEX + SOVEREIGN",
+  "description": "Sovereign DeFi Extraction System",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node --max-old-space-size=350 --max-semi-space-size=64 --expose-gc --no-concurrent-sweeping src/index.js",
     "dev":   "node --max-old-space-size=350 --expose-gc src/index.js",
-    "build": "echo 'No build step — pure ESM'"
+    "build": "echo 'No build step'"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -19,7 +19,6 @@
     "viem":          "^2.19.0",
     "ws":            "^8.17.0"
   },
-  "devDependencies": {},
   "author": "Bun Omar Secka",
   "license": "UNLICENSED",
   "private": true
