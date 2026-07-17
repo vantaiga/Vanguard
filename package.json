@@ -10,22 +10,16 @@
     "build": "echo 'No build step — pure ESM'"
   },
   "engines": {
-    "node": "22.x",
-    "npm":  ">=9.0.0"
+    "node": ">=18.0.0"
   },
   "dependencies": {
-    "@noble/curves":  "^1.4.0",
-    "better-sqlite3": "^9.6.0",
-    "ethers":         "^6.13.0",
-    "express":        "^4.19.2",
-    "viem":           "^2.19.0",
-    "ws":             "^8.17.0"
+    "@noble/curves": "^1.4.0",
+    "ethers":        "^6.13.0",
+    "express":       "^4.19.2",
+    "viem":          "^2.19.0",
+    "ws":            "^8.17.0"
   },
   "devDependencies": {},
-  "repository": {
-    "type": "git",
-    "url":  "https://github.com/vantaiga/vanguard"
-  },
   "author": "Bun Omar Secka",
   "license": "UNLICENSED",
   "private": true
