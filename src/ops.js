@@ -7,7 +7,7 @@
 
 import { getConfig, setConfig } from './db.js'
 import { getActive, rpcCall, getChain } from './chains1.js'
-import { getExecutorAddress, setContractAddr, getContractAddr } from './pimlico.js'
+import { getExecutorAddress, setContractAddr, getContractAddr, getWallet, getRawWallet } from './builders.js'
 import { emit, on } from './events.js'
 import { getSABF64, SAB_OFFSETS } from './sdal.js'
 import { NONCE_I32 } from './nexus.js'
