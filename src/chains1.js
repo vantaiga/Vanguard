@@ -450,6 +450,47 @@ export async function startChains1() {
 
   startSelfHeal()
 
+  // ═══════════════════════════════════════════════════════════════════════════
+// EXPORTS — every import in the codebase resolves here
+// ═══════════════════════════════════════════════════════════════════════════
+
+export function getChain(name)    { return CHAINS[name] || null }
+export function getActive()       { return Object.entries(CHAINS).map(([n,c])=>({name:n,...c})).sort((a,b)=>a.tier-b.tier) }
+export function getAllChains()     { return CHAINS }
+export function getMC3()          { return MC3 }
+export function getWS(name)       { return _ws[name] || null }
+
+export function rpcCall(chain, method, params) {
+  if (!_routers[chain]) _routers[chain] = new AlchemyRouter(chain)
+  return _routers[chain].call(method, params)
+}
+
+export function getChains1Stats() {
+  return {
+    totalPools:      Object.values(ALL_POOLS).flat().length,
+    qualifyingSwaps: _totalQ,
+    threshold:       '$100M-$10B',
+    swapsByChain:    {..._qualCount},
+    wsConnected:     Object.keys(_ws).filter(k=>_ws[k]?.readyState===1).length,
+    httpPolling:     Object.keys(_polls).filter(k=>_polls[k]).length,
+  }
+}
+
+// THIS WAS THE MISSING EXPORT — dashboard.js and intelligence.js import this
+export function getWsPoolStats() {
+  return {
+    totalPools:      Object.values(ALL_POOLS).flat().length,
+    totalSeen:       Object.values(_swapCount || {}).reduce((s,v)=>s+v,0),
+    qualifyingSwaps: _totalQ,
+    threshold:       '$100M–$10B',
+    httpPolling:     Object.keys(_polls).filter(k=>_polls[k]),
+    wsConnected:     Object.keys(_ws).filter(k=>_ws[k]?.readyState===1),
+    swapsByChain:    {...(_qualCount||{})},
+    lastSwap:        Object.fromEntries(
+      Object.entries(_lastSwap||{}).map(([k,v])=>[k,Math.floor((Date.now()-v)/1000)+'s ago'])
+    ),
+  }
+}
   // Stats every 5min
   setInterval(() => {
     const s = getChains1Stats()
