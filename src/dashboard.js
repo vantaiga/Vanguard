@@ -1,8 +1,24 @@
-// Vanguard · dashboard.js — Sovereign Control Center server
-// Imports live stats (no stale DB reads for status)
-// SOVEREIGN chat via SSE streaming
-// USB vault detection and routing
-// All 19 sections of Nightfall dashboard served here
+// Vanguard · dashboard.js — Sovereign Control Center
+// Minimal file — server.js handles ALL routes and WebSocket
+// dashboard.js only provides the startDashboard() function
+// which is called by server.js internally
+// All state comes from server.js buildState()
+// All routes are registered in server.js registerRoutes()
+// Nightfall.html and nightfall-black.html are served directly by server.js
+
+// This file exists for module compatibility
+// Any module that imports startDashboard from dashboard.js
+// will receive a no-op (server.js already started the server)
+
+export function startDashboard() {
+  // Server is started by server.js in index.js
+  // This function is intentionally a no-op
+  // Called by legacy imports — safe to ignore
+}
+
+export function getDashboardStats() {
+  return { active: true, routes: 'served by server.js' }
+}
 
 import express   from 'express'
 import { createServer } from 'http'
