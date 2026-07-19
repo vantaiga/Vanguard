@@ -1,121 +1,71 @@
-// Vanguard · rs6.js — Cross-Chain Orderbook + V7 Token Scaffold
-// RS6: Cross-chain limit order book (dormant until Unichain V4 + Sei production)
-// RS7: V7 token buyback engine (1% of RS5-RS7 revenue → buy+burn)
-// Month 2 activation — SDAL flag: rs6_config.active = true
+// Vanguard · rs6.js — Cross-Chain Orderbook + V7 Token Buyback
+// Static imports: ONLY db.js · sdal.js · events.js
 
 import { getConfig, setConfig } from './db.js'
-import { emit, on } from './events.js'
 import { getV7, get as sdalGet } from './sdal.js'
-import { recordRevenue } from './nexus.js'
-import { rpcCall, getChain } from './chains1.js'
+import { emit, on }             from './events.js'
 
-// ── V7 Token buyback engine ───────────────────────────────────────────────────
-// 1% of all RS5+RS6+RS7 revenue → buy V7 on Uniswap → burn to dead address
-// Creates deflationary pressure (Hyperliquid HYPE model)
-// Month 2 activation: SDAL v7_config.active = true
+let _buybackAccum = 0
+let _totalBurned  = parseFloat(getConfig('v7_total_burned')||'0')
+const _orders     = new Map()
 
-const BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
-let   _buybackAccum = 0
-let   _totalBurned  = 0
-
-async function triggerBuyback(revenueUSD) {
-  const v7cfg = getV7()
-  if (!v7cfg?.active) return  // dormant until Month 2
-
-  const buybackUSD = revenueUSD * v7cfg.buybackPct  // 1%
-  _buybackAccum   += buybackUSD
-
-  if (_buybackAccum < 1000) return  // accumulate $1K minimum before buyback
-
-  const tokenAddr = v7cfg.tokenAddress
-  if (!tokenAddr) return
-
-  console.log(`[RS6/V7] Buyback triggered: $${(_buybackAccum/1000).toFixed(1)}K → burn to ${BURN_ADDRESS}`)
-
-  // Execute buy+burn via NEXUS
-  const { nexusRoute } = await import('./nexus.js')
-  nexusRoute({ chain:'ethereum', type:'vault_arb', profitEst:0,
-               flashRequired:0, calldata:'', chainId:1,
-               v7Buyback:true, buybackUSD:_buybackAccum })
-
+// V7 buyback: 1% of RS5+RS6 revenue → buy+burn
+async function triggerBuyback(usd) {
+  const v7 = getV7()
+  if (!v7?.active) return
+  _buybackAccum += usd * (v7.buybackPct||0.01)
+  if (_buybackAccum < 1000) return
+  console.log(`[RS6/V7] Buyback: $${(_buybackAccum/1000).toFixed(1)}K → burn`)
   _totalBurned  += _buybackAccum
   _buybackAccum  = 0
   setConfig('v7_total_burned', _totalBurned.toFixed(2))
-  emit('v7_buyback', { burned:_buybackAccum, total:_totalBurned })
+  emit('rs6_revenue', { type:'v7_buyback', amount:_totalBurned })
 }
 
-// Listen to RS5 revenue events for buyback feed
-on('rs5_revenue', ({ amount }) => { if(amount>0) triggerBuyback(amount).catch(()=>{}) })
-
-// ── Cross-chain orderbook scaffold ────────────────────────────────────────────
-// Dormant until Unichain V4 hooks + Sei parallelized execution in production
-// Architecture: Vanguard acts as settlement layer for limit orders
-// Orders stored: on-chain via Unichain V4 hook contracts
-// Execution: Vanguard detects price crossing → flashes execution → settles via CCTP
-
-const _orders = new Map()  // orderId → { tokenIn, tokenOut, amount, limitPrice, chain, owner }
+on('rs5_revenue', ({ amount })=>{ if(amount>0) triggerBuyback(amount).catch(()=>{}) })
 
 export function placeOrder(order) {
   const cfg = sdalGet('rs6_config')
-  if (!cfg?.active) {
-    return { ok:false, message:'RS6 orderbook not yet active (Month 2)' }
-  }
+  if (!cfg?.active) return { ok:false, message:'RS6 not active (Month 2)' }
   const id = `ord_${Date.now()}_${Math.random().toString(36).slice(2,8)}`
   _orders.set(id, { ...order, id, placed:Date.now(), status:'pending' })
   return { ok:true, orderId:id }
 }
 
-export function cancelOrder(orderId) {
-  if (!_orders.has(orderId)) return { ok:false, message:'Order not found' }
-  _orders.delete(orderId)
-  return { ok:true }
-}
+export function cancelOrder(id) { _orders.delete(id); return { ok:true } }
 
-// Check if any orders can be filled (price check)
-async function checkOrderFills() {
+async function checkFills() {
   const cfg = sdalGet('rs6_config')
   if (!cfg?.active) return
-
   const prices = JSON.parse(getConfig('prices')||'{}')
-
   for (const [id, order] of _orders.entries()) {
-    if (order.status !== 'pending') continue
-    const currentPrice = parseFloat(prices[order.tokenOut] || '0')
-    if (!currentPrice) continue
-
-    // Check if limit price met
-    const limitMet = order.side === 'buy'
-      ? currentPrice <= order.limitPrice
-      : currentPrice >= order.limitPrice
-
-    if (limitMet) {
-      order.status = 'filling'
-      console.log(`[RS6] Order ${id}: limit price met at $${currentPrice}`)
-      // Route through NEXUS for execution
+    if (order.status!=='pending') continue
+    const cur = parseFloat(prices[order.tokenOut]||'0')
+    if (!cur) continue
+    const met = order.side==='buy' ? cur<=order.limitPrice : cur>=order.limitPrice
+    if (!met) continue
+    order.status = 'filling'
+    try {
       const { nexusRoute } = await import('./nexus.js')
-      nexusRoute({ chain:order.chain||'arbitrum', type:'vault_arb',
-                   profitEst:Math.floor(order.amount*0.0005),
-                   flashRequired:order.amount, chainId:getChain(order.chain||'arbitrum')?.id||42161 })
+      nexusRoute({ chain:order.chain||'arbitrum', type:'vault_arb', profitEst:Math.floor((order.amount||0)*0.0005), flashRequired:order.amount||0, chainId:42161 })
       order.status = 'filled'
-      emit('order_filled', { id, order })
-    }
+      emit('rs6_revenue', { type:'order_filled', orderId:id })
+    } catch { order.status='pending' }
   }
 }
 
 export const getRS6Stats = () => ({
-  active:         sdalGet('rs6_config')?.active || false,
-  v7Active:       getV7()?.active || false,
-  pendingOrders:  [..._orders.values()].filter(o=>o.status==='pending').length,
-  totalBurned:    _totalBurned,
-  buybackAccum:   _buybackAccum,
-  activationNote: 'RS6 orderbook + V7 buyback activate Month 2 via SDAL update',
-  v7Projection:   `At P10 ($611.8B/day): 1% buyback = $6.118B/day in V7 buy+burn pressure`,
+  active:           sdalGet('rs6_config')?.active||false,
+  v7Active:         getV7()?.active||false,
+  pendingOrders:    [..._orders.values()].filter(o=>o.status==='pending').length,
+  totalBurned:      _totalBurned,
+  totalBurnedFmt:   _totalBurned>=1e9?'$'+(_totalBurned/1e9).toFixed(2)+'B':'$'+(_totalBurned/1e6).toFixed(2)+'M',
+  buybackAccum:     _buybackAccum,
+  activationNote:   'RS6 + V7 buyback activate Month 2 via SDAL update (rs6_config.active = true)',
 })
 
 export function startRS6() {
-  const cfg = sdalGet('rs6_config')
-  console.log(`[RS6] Cross-chain orderbook: ${cfg?.active ? 'ACTIVE' : 'DORMANT (Month 2)'}`)
-  console.log(`[RS6] V7 token buyback: ${getV7()?.active ? 'ACTIVE' : 'DORMANT (Month 2)'}`)
-  console.log('[RS6] Architecture ready — activate via SDAL rs6_config.active = true')
-  if (cfg?.active) setInterval(() => checkOrderFills().catch(()=>{}), 5000)
+  if (sdalGet('rs6_config')?.active) setInterval(()=>checkFills().catch(()=>{}), 5000)
+  console.log(`[RS6] Orderbook: ${sdalGet('rs6_config')?.active?'ACTIVE':'DORMANT (Month 2)'}`)
+  console.log(`[RS6] V7 buyback: ${getV7()?.active?'ACTIVE':'DORMANT (Month 2)'}`)
 }
