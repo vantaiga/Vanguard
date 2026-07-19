@@ -9,9 +9,7 @@
     "dev":   "node --max-old-space-size=350 --expose-gc src/index.js",
     "build": "echo 'No build step — pure ESM'"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
+  "engines": { "node": ">=18.0.0" },
   "dependencies": {
     "@noble/curves": "^1.4.0",
     "ethers":        "^6.13.0",
