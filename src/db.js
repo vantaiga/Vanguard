@@ -1,7 +1,7 @@
-// Vanguard · db.js — Pure JavaScript. Zero native dependencies.
-// No better-sqlite3. No node-gyp. No Python. No gcc.
-// Storage: in-memory Map (fast) + JSON file persistence every 10s
-// Same export API as before — all other files unchanged.
+// Vanguard · db.js
+// Pure JavaScript. Zero native dependencies. Zero node-gyp. Zero Python.
+// In-memory Map + JSON file persistence every 10 seconds.
+// Same API surface as before — all 24 files import this unchanged.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
@@ -11,11 +11,11 @@ const EXEC_PATH = '/data/vanguard_execs.json'
 
 // ── In-memory stores ──────────────────────────────────────────────────────────
 const _cfg   = new Map()
-const _execs = []        // ring buffer, max 10K
+const _execs = []         // ring buffer — max 10,000 entries
 let   _cfgDirty  = false
 let   _execDirty = false
 
-// ── Disk I/O ──────────────────────────────────────────────────────────────────
+// ── Disk helpers ──────────────────────────────────────────────────────────────
 function ensureDir(p) {
   try { mkdirSync(dirname(p), { recursive: true }) } catch {}
 }
@@ -43,19 +43,13 @@ function loadExecs() {
 function saveCfg() {
   if (!_cfgDirty) return
   _cfgDirty = false
-  try {
-    ensureDir(CFG_PATH)
-    writeFileSync(CFG_PATH, JSON.stringify(Object.fromEntries(_cfg)), 'utf8')
-  } catch {}
+  try { ensureDir(CFG_PATH); writeFileSync(CFG_PATH, JSON.stringify(Object.fromEntries(_cfg)), 'utf8') } catch {}
 }
 
 function saveExecs() {
   if (!_execDirty) return
   _execDirty = false
-  try {
-    ensureDir(EXEC_PATH)
-    writeFileSync(EXEC_PATH, JSON.stringify(_execs.slice(-1000)), 'utf8')
-  } catch {}
+  try { ensureDir(EXEC_PATH); writeFileSync(EXEC_PATH, JSON.stringify(_execs.slice(-1000)), 'utf8') } catch {}
 }
 
 // ── Config API ────────────────────────────────────────────────────────────────
@@ -81,18 +75,17 @@ export function bulkSetConfig(pairs) {
 // ── Executions API ────────────────────────────────────────────────────────────
 export function recordExecution({ txHash, chain, protocol, profitUsdc, gasUsed, status }) {
   _execs.push({
-    txHash:      txHash      || '',
-    chain:       chain       || '',
-    protocol:    protocol    || '',
-    profit_usdc: profitUsdc  || 0,
-    gas_used:    gasUsed     || 0,
-    status:      status      || 'pending',
+    txHash:      txHash     || '',
+    chain:       chain      || '',
+    protocol:    protocol   || '',
+    profit_usdc: profitUsdc || 0,
+    gas_used:    gasUsed    || 0,
+    status:      status     || 'pending',
     ts:          Math.floor(Date.now() / 1000),
   })
   if (_execs.length > 10000) _execs.shift()
   _execDirty = true
 
-  // Running totals
   const prev  = parseFloat(getConfig('all_time_profit')  || '0')
   const count = parseInt(getConfig('total_executions')    || '0')
   setConfig('all_time_profit',  (prev + (profitUsdc || 0)).toFixed(2))
@@ -123,13 +116,7 @@ export function getStats() {
 }
 
 export function dbHealth() {
-  return {
-    ok:         true,
-    configKeys: _cfg.size,
-    executions: _execs.length,
-    engine:     'pure-js',
-    cfgPath:    CFG_PATH,
-  }
+  return { ok: true, configKeys: _cfg.size, executions: _execs.length, engine: 'pure-js' }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
