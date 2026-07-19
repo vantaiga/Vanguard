@@ -300,7 +300,7 @@ function processLog(chainName, log) {
       flash     = Math.min(usd * 0.08, 20e6)
       profitEst = Math.floor(flash * 0.005)
       if (profitEst >= (chain.minProfit || 5)) {
-        const { buildTemplate, fillTemplate } = require('./apex.js')
+        const { buildTemplate, fillTemplate } = import('./apex.js')
         const key = buildTemplate(chain.usdc, chain.weth, 500, 3000, 'placeholder')
         const buf = fillTemplate(key, BigInt(Math.floor(flash*1e6)), BigInt(Math.floor(profitEst*0.3*1e6)))
         if (buf) { calldata = '0x' + buf.slice(0,196).toString('hex') }
