@@ -87,4 +87,37 @@ async function boot() {
   console.log(`  FUND: 0.001 POL → ${exec.getExecutorAddress() ?? '0xEc92EF0C897b48A3525Df011D08011c5eB2D6D39'}`)
   console.log(`${'═'.repeat(62)}\n`)
 
-  // Post
+  // Post-boot console logs — ONLY swaps + executions + system events
+  on('mega_swap', ({ chain, swapUSD }) => {
+    if (!_bootDone) return
+    _swapCount++
+    if (_swapCount % 100 === 0) {
+      const fmt = (swapUSD??0) >= 1e9 ? '$'+((swapUSD??0)/1e9).toFixed(1)+'B' : '$'+((swapUSD??0)/1e6).toFixed(0)+'M'
+      console.log(`[SWAP] ${_swapCount} × ${fmt} · ${chain} → overlay`)
+    }
+  })
+
+  on('deploy_success',    ({ chain, address }) => console.log(`[LIVE] ${chain.toUpperCase()} → ${address}`))
+  on('apex_success',      ({ chain, profit, latencyMs }) => console.log(`[EXEC] ${fmtRev(profit??0)} (${latencyMs}ms) ${chain}`))
+  on('emergency_halt',    ({ reason }) => console.error('[HALT]', reason))
+  on('system_halt',       () => console.log('[HALT] System halted by operator'))
+  on('system_resume',     () => console.log('[LIVE] System resumed by operator'))
+  on('propeller_changed', ({ from, to, dailyRev }) => console.log(`[P${to}] Propeller P${from}→P${to} · ${fmtRev(dailyRev??0)}/day`))
+  on('crash_mode_activated',   () => console.log('[CRASH] Market IS a factor — cascade active'))
+  on('crash_mode_off',         () => console.log('[CRASH] Market NOT a factor — propeller governs'))
+
+  // Silent GC
+  setInterval(() => {
+    const mb = process.memoryUsage().heapUsed / 1024 / 1024
+    if (mb > 320 && typeof global.gc === 'function') global.gc()
+  }, 60000)
+}
+
+boot().catch(e => {
+  console.error('[BOOT] Fatal:', e.message)
+  setTimeout(() => boot().catch(err => console.error('[BOOT] Recovery failed:', err.message)), 5000)
+})
+
+process.on('uncaughtException',  e => { if (!e.message?.includes('EADDRINUSE')) console.error('[ERR]', e.message?.slice(0,120)) })
+process.on('unhandledRejection', r => console.error('[REJ]', String(r).slice(0,120)))
+process.on('SIGTERM', () => { console.log('[VANGUARD] Shutdown'); process.exit(0) })
