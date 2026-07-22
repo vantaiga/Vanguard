@@ -12,4 +12,4 @@ volumeId  = "your-volume-id"
 
 [deploy.resources]
 cpuLimit    = "0.5"
-memoryLimit = "450MB"
+memoryLimit = "1GB"
