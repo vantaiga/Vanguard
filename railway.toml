@@ -1,15 +1,22 @@
+# Vanguard Protocol — Railway Configuration
+# Ensures /data volume is mounted and system has correct memory limits
+
 [build]
 builder = "nixpacks"
 
 [deploy]
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 99
 startCommand = "node --max-old-space-size=350 --max-semi-space-size=64 --expose-gc --no-concurrent-sweeping src/index.js"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
 
-[[deploy.mounts]]
+# Memory: 350MB heap cap prevents OOM crash
+# --expose-gc: allows manual GC calls in index.js
+# --no-concurrent-sweeping: reduces GC pause spikes
+
+[volumes]
+# Mount /data as persistent volume
+# This is what db.js checks first on boot
+# Without this: all overlay data lost on every restart
+# With this: overlay queue, contracts, revenue survive FOREVER
+[[volumes.mounts]]
 mountPath = "/data"
-volumeId  = "your-volume-id"
-
-[deploy.resources]
-cpuLimit    = "0.5"
-memoryLimit = "1GB"
