@@ -5,17 +5,18 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node --max-old-space-size=350 --max-semi-space-size=64 --expose-gc --no-concurrent-sweeping src/index.js",
-    "dev":   "node --max-old-space-size=350 --expose-gc src/index.js",
+    "start": "node --max-old-space-size=320 --max-semi-space-size=32 --expose-gc --no-concurrent-sweeping src/index.js",
+    "dev":   "node --max-old-space-size=320 --expose-gc src/index.js",
     "build": "echo 'No build step — pure ESM'"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "ethers": "^6.13.0",
-    "express": "^4.19.2",
-    "ws": "^8.17.0"
+    "ethers":   "^6.13.0",
+    "express":  "^4.19.2",
+    "viem":     "^2.19.0",
+    "ws":       "^8.17.0"
   },
   "author": "Bun Omar Secka",
   "license": "UNLICENSED",
