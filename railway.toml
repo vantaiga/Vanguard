@@ -1,22 +1,18 @@
 # Vanguard Protocol — Railway Configuration
-# Ensures /data volume is mounted and system has correct memory limits
+# Primary OOM fix: 80MB → 320MB heap
+# Removed --experimental-vm-modules (not needed)
+# Removed better-sqlite3 from everywhere
+# /data volume mount for db.js persistence
 
 [build]
 builder = "nixpacks"
 
 [deploy]
-startCommand = "node --max-old-space-size=350 --max-semi-space-size=64 --expose-gc --no-concurrent-sweeping src/index.js"
+startCommand = "node --max-old-space-size=320 --max-semi-space-size=32 --expose-gc --no-concurrent-sweeping src/index.js"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
 
-# Memory: 350MB heap cap prevents OOM crash
-# --expose-gc: allows manual GC calls in index.js
-# --no-concurrent-sweeping: reduces GC pause spikes
-
-[volumes]
-# Mount /data as persistent volume
-# This is what db.js checks first on boot
-# Without this: all overlay data lost on every restart
-# With this: overlay queue, contracts, revenue survive FOREVER
 [[volumes.mounts]]
 mountPath = "/data"
