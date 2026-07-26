@@ -1,0 +1,9 @@
+# Tells Railpack/Nixpacks to include Python in build environment
+# Needed if any transitive dependency requires node-gyp
+# Our code uses zero native deps — this is precautionary only
+
+[install]
+nixpkgs = ["python3", "nodejs_22"]
+
+[build]
+cmd = "npm ci --ignore-scripts"
