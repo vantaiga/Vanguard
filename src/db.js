@@ -1,28 +1,18 @@
 // Vanguard · db.js — DATABASE + MEMORY GOVERNOR
 // Pure Node.js fs + JSON. Zero native deps. Zero node-gyp. Zero Python.
-// Builds on Railway free tier with no compilation step.
+// Railway free tier compatible — no compilation, no binary addons.
 //
-// MEMORY FIXES (no other file needs to change):
-//   1. saveOverlay() writes 18 small per-chain shards (~0.1MB each)
-//      instead of one giant JSON.stringify() — eliminates 35MB GC spike
-//   2. Memory Governor: forceGC() every 30s when heap > 220MB
-//   3. CONFIG_KEY_CAP: config Map capped at 2,000 keys
-//   4. OVERLAY_RAM_CAP: 25,000 entries (not 50,000)
-//   5. exec ring: 1,000 entries (not 10,000)
-//   6. Per-write GC: forces collection after every overlay write
+// MEMORY THRESHOLDS (from deep dive — lowered aggressively):
+//   HEAP_GC_MB   = 140  (was 200) — GC fires much earlier
+//   HEAP_WARN_MB = 180  (was 260) — warn earlier
+//   HEAP_CRIT_MB = 240  (was 290) — skip writes earlier
+//   Governor interval = 15s (was 30s) — twice as frequent
+//   saveOverlay skip threshold = HEAP_WARN_MB (was HEAP_CRIT_MB)
 //
-// VOLUME PERSISTENCE:
-//   /data/cfg.json         — config Map
-//   /data/execs.json       — execution history (last 1,000)
-//   /data/revenue.json     — all-time revenue totals
-//   /data/contracts.json   — deployed contract addresses
-//   /data/ovl_<chain>.json — overlay shards (18 files)
-//   /data/ovl_index.json   — overlay metadata
-//   /data/swaps.txt        — total swap count
-//   /data/gas.json         — gas prices per chain
-//   /data/sdal.json        — SDAL overrides
-//   /data/process_start.txt— container start time (true uptime)
-//   /data/audit.log        — rolling audit log (max 2MB)
+// OVERLAY FIX:
+//   Per-chain shard writes (18 × ~0.1MB vs 1 × 35MB)
+//   GC fired BEFORE each write, not after
+//   OVERLAY_RAM_CAP = 25,000 (intelligence.js uses RAM_CAP=15K — db.js cap is safety net)
 
 import {
   readFileSync, writeFileSync, existsSync,
@@ -34,7 +24,7 @@ import { performance } from 'perf_hooks'
 const MB = 1024 * 1024
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 1 — VOLUME DETECTION + FALLBACK
+// SECTION 1 — VOLUME DETECTION
 // ═══════════════════════════════════════════════════════════════════════════
 let _root     = '/data'
 let _mounted  = false
@@ -56,7 +46,8 @@ function detectVolume() {
     } catch {}
   }
   _root = '/tmp/vanguard_data'
-  try { mkdirSync(_root, { recursive:true }); _writable = false } catch {}
+  try { mkdirSync(_root, { recursive:true }) } catch {}
+  _writable = false
   return false
 }
 
@@ -64,19 +55,19 @@ const f = (name) => join(_root, name)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SECTION 2 — MEMORY GOVERNOR
-// The single mechanism that keeps Vanguard under 320MB.
-// Runs independently — no other file needs to know it exists.
-// forceGC() is the key: global.gc() is available via --expose-gc in railway.toml
+// Thresholds lowered from deep dive analysis.
+// Governor runs every 15s (was 30s).
+// GC fires at 140MB — 80MB before hard cap.
 // ═══════════════════════════════════════════════════════════════════════════
-const HEAP_GC_MB   = 200   // force GC above this — well before OOM
-const HEAP_WARN_MB = 260   // warn level
-const HEAP_CRIT_MB = 290   // critical — skip writes, GC only
+const HEAP_GC_MB   = 140   // was 200 — fire GC 80MB earlier
+const HEAP_WARN_MB = 180   // was 260
+const HEAP_CRIT_MB = 240   // was 290
 
-let _peakHeapMB  = 0
-let _gcCount     = 0
-let _gcLastAt    = 0
-let _warnCount   = 0
-let _govActive   = false
+let _peakHeapMB = 0
+let _gcCount    = 0
+let _gcLastAt   = 0
+let _warnCount  = 0
+let _govActive  = false
 
 function currentHeapMB() {
   const mb = Math.round(process.memoryUsage().heapUsed / MB)
@@ -87,12 +78,12 @@ function currentHeapMB() {
 function forceGC(label) {
   if (typeof global.gc !== 'function') return
   const now = Date.now()
-  if (now - _gcLastAt < 8000) return   // min 8s between calls
+  if (now - _gcLastAt < 5000) return   // min 5s between calls (was 8s)
   try {
     global.gc()
     _gcCount++
     _gcLastAt = now
-    audit(`GC reason=${label} heap=${currentHeapMB()}MB total=${_gcCount}`)
+    audit(`GC reason=${label} heap=${currentHeapMB()}MB count=${_gcCount}`)
   } catch {}
 }
 
@@ -100,26 +91,25 @@ function startMemoryGovernor() {
   if (_govActive) return
   _govActive = true
 
-  // Check every 30 seconds — aggressive but not too frequent
+  // Every 15s (was 30s) — twice as frequent = catches spikes sooner
   setInterval(() => {
     const mb = currentHeapMB()
     if (mb > HEAP_CRIT_MB) {
-      forceGC('critical_' + mb + 'MB')
+      forceGC('critical_' + mb)
       _warnCount++
     } else if (mb > HEAP_WARN_MB) {
-      forceGC('warn_' + mb + 'MB')
+      forceGC('warn_' + mb)
       _warnCount++
     } else if (mb > HEAP_GC_MB) {
-      forceGC('elevated_' + mb + 'MB')
+      forceGC('elevated_' + mb)
     }
-  }, 30_000)
+  }, 15_000)   // was 30_000
 
-  // Memory stats to audit every 5 minutes (not console — no log spam)
+  // Memory log every 5 minutes (audit only — no console spam)
   setInterval(() => {
     const u = process.memoryUsage()
     audit(
       `HEAP used=${Math.round(u.heapUsed/MB)}MB ` +
-      `total=${Math.round(u.heapTotal/MB)}MB ` +
       `rss=${Math.round(u.rss/MB)}MB ` +
       `peak=${_peakHeapMB}MB ` +
       `gc=${_gcCount} warns=${_warnCount}`
@@ -128,17 +118,12 @@ function startMemoryGovernor() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 3 — OVERLAY PERSISTENCE
-// THE OOM FIX: streaming per-chain shards, not one giant string.
-//
-// intelligence.js calls saveOverlay(_heap) every 10s.
-// Old behavior: JSON.stringify(entire 50K heap) = 35MB string = OOM.
-// New behavior: 18 chain shards × ~0.1MB each = 1.8MB total, no spike.
-//
-// OVERLAY_RAM_CAP = 25,000 (intelligence.js reads this export)
-// This halves the heap size from 50K entries to 25K.
+// SECTION 3 — OVERLAY PERSISTENCE (OOM FIX)
+// GC fires BEFORE each write (not after).
+// Skips write if above HEAP_WARN_MB (more conservative than before).
+// Per-chain shards: 18 × ~0.1MB vs old 1 × 35MB.
 // ═══════════════════════════════════════════════════════════════════════════
-export const OVERLAY_RAM_CAP  = 25_000
+export const OVERLAY_RAM_CAP  = 25_000   // safety net — intelligence.js uses 15K
 export const OVERLAY_DISK_CAP = 500_000
 
 const OVERLAY_CHAINS = [
@@ -147,8 +132,6 @@ const OVERLAY_CHAINS = [
   'sonic','berachain','sei','unichain','worldchain',
 ]
 
-// Compact entry codec: 80 bytes/entry (vs 700 bytes naive)
-// Only store calldata when pre-built — eliminates 200B from most entries
 function packEntry(e) {
   const hasData = e.readyToExec && e.calldata && e.calldata.length > 2
   return {
@@ -158,8 +141,7 @@ function packEntry(e) {
     p:  Math.round(e.profitEst ?? 0),
     f:  Math.round(e.flash     ?? 0),
     u:  Math.round(e.swapUSD   ?? 0),
-    s:  e.status === 'pending'  ? 0
-      : e.status === 'paused'   ? 1 : 2,
+    s:  e.status === 'pending' ? 0 : e.status === 'paused' ? 1 : 2,
     t:  e.ts          ?? 0,
     ex: e.expiresAt   ?? 0,
     r:  e.readyToExec ? 1 : 0,
@@ -191,19 +173,21 @@ function unpackEntry(p) {
 export function saveOverlay(heap) {
   if (!_writable || !Array.isArray(heap)) return
 
-  // Under critical pressure: skip write, GC instead
   const mb = currentHeapMB()
-  if (mb > HEAP_CRIT_MB) {
-    forceGC('overlay_skip_critical_' + mb)
+
+  // Skip write above HEAP_WARN_MB (more conservative — was HEAP_CRIT_MB)
+  if (mb > HEAP_WARN_MB) {
+    forceGC('overlay_skip_' + mb)
     return
   }
+
+  // Force GC BEFORE write (not after) — free temporary strings first
+  if (mb > HEAP_GC_MB) forceGC('pre_overlay_write_' + mb)
 
   const t0          = performance.now()
   const perChainCap = Math.floor(OVERLAY_DISK_CAP / OVERLAY_CHAINS.length)
   let   totalWritten= 0
 
-  // Write one shard at a time — each is a small string (~0.1MB)
-  // Never hold the full heap JSON in memory
   for (const chainName of OVERLAY_CHAINS) {
     const packed = []
     for (let i = 0; i < heap.length; i++) {
@@ -213,32 +197,28 @@ export function saveOverlay(heap) {
       packed.push(packEntry(e))
       if (packed.length >= perChainCap) break
     }
-
-    packed.sort((a, b) => (b.p ?? 0) - (a.p ?? 0))
-
+    packed.sort((a,b) => (b.p??0) - (a.p??0))
     try {
-      // One small JSON.stringify — ~0.1MB string — safe
-      const json = JSON.stringify(packed)
+      const json = JSON.stringify(packed)      // ~0.1MB string
       writeFileSync(f('ovl_' + chainName + '.json'), json, 'utf8')
       totalWritten += packed.length
     } catch {}
-    // json string is now out of scope — eligible for GC
+    // json is now out of scope — V8 can collect it between iterations
   }
 
-  // Write index
   try {
     writeFileSync(f('ovl_index.json'), JSON.stringify({
       ts:    Math.floor(Date.now() / 1000),
       total: totalWritten,
-      caps:  { disk: OVERLAY_DISK_CAP, ram: OVERLAY_RAM_CAP },
+      caps:  { disk:OVERLAY_DISK_CAP, ram:OVERLAY_RAM_CAP },
     }), 'utf8')
   } catch {}
 
-  // GC after all shard writes — frees the 18 small strings
+  // GC after write — clean up the 18 shard strings
   forceGC('post_overlay_write')
 
   const dt = Math.round(performance.now() - t0)
-  if (dt > 500) audit(`OVERLAY_WRITE slow=${dt}ms entries=${totalWritten}`)
+  if (dt > 300) audit(`OVERLAY_WRITE slow=${dt}ms entries=${totalWritten}`)
 }
 
 export function loadOverlay() {
@@ -257,7 +237,7 @@ export function loadOverlay() {
       } catch {}
     }
     return all
-      .sort((a, b) => (b.profitEst ?? 0) - (a.profitEst ?? 0))
+      .sort((a,b) => (b.profitEst??0) - (a.profitEst??0))
       .slice(0, OVERLAY_RAM_CAP)
   } catch { return [] }
 }
@@ -268,17 +248,15 @@ export function clearOverlayDisk() {
       const path = f('ovl_' + name + '.json')
       if (existsSync(path)) writeFileSync(path, '[]', 'utf8')
     }
-    writeFileSync(f('ovl_index.json'), JSON.stringify({ ts:0, total:0 }), 'utf8')
+    writeFileSync(f('ovl_index.json'), JSON.stringify({ts:0,total:0}), 'utf8')
   } catch {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 4 — CONFIG PERSISTENCE
-// Capped at 2,000 keys. Priority keys always kept.
+// SECTION 4 — CONFIG PERSISTENCE (2,000 key cap)
 // ═══════════════════════════════════════════════════════════════════════════
 const CONFIG_KEY_CAP = 2_000
 
-// These keys are always persisted regardless of cap
 const PRIORITY_KEYS = new Set([
   'prop_intensity','prop_daily_target','daily_achieved','crash_mode',
   'system_paused','all_time_profit','lp_total','total_executions',
@@ -295,20 +273,15 @@ export function saveConfig(cfgMap) {
   if (!_writable || !(cfgMap instanceof Map)) return
   try {
     const obj = {}
-
-    // Priority keys first — guaranteed slots
     for (const k of PRIORITY_KEYS) {
       if (cfgMap.has(k)) obj[k] = cfgMap.get(k)
     }
-
-    // Fill remaining slots with other keys
     const slots = CONFIG_KEY_CAP - Object.keys(obj).length
     let   filled = 0
     for (const [k, v] of cfgMap) {
       if (filled >= slots) break
       if (!PRIORITY_KEYS.has(k)) { obj[k] = v; filled++ }
     }
-
     writeFileSync(f('cfg.json'), JSON.stringify(obj), 'utf8')
   } catch {}
 }
@@ -318,22 +291,21 @@ export function loadConfig() {
     const path = f('cfg.json')
     if (!existsSync(path)) return new Map()
     const obj  = JSON.parse(readFileSync(path, 'utf8'))
-    return new Map(Object.entries(obj).map(([k, v]) => [k, String(v)]))
+    return new Map(Object.entries(obj).map(([k,v]) => [k, String(v)]))
   } catch { return new Map() }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 5 — EXECUTION HISTORY
-// Capped at 1,000 on disk. Compact codec.
+// SECTION 5 — EXECUTION HISTORY (1,000 cap, compact codec)
 // ═══════════════════════════════════════════════════════════════════════════
 function packExec(e) {
   return {
-    h:  (e.txHash    ?? '').slice(0, 20),
-    c:  e.chain       ?? '',
-    pr: (e.protocol  ?? '').slice(0, 16),
+    h:  (e.txHash   ?? '').slice(0, 20),
+    c:  e.chain      ?? '',
+    pr: (e.protocol ?? '').slice(0, 16),
     p:  Math.round(e.profit_usdc ?? 0),
     s:  e.status === 'success' ? 1 : 0,
-    t:  e.ts          ?? 0,
+    t:  e.ts         ?? 0,
   }
 }
 
@@ -369,18 +341,18 @@ export function loadExecs() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 6 — REVENUE PERSISTENCE
+// SECTION 6 — REVENUE
 // ═══════════════════════════════════════════════════════════════════════════
 export function saveRevenue({ allTime, lp, today, executions, wins } = {}) {
   if (!_writable) return
   try {
     writeFileSync(f('revenue.json'), JSON.stringify({
-      a: Math.round((allTime    ?? 0) * 100) / 100,
-      l: Math.round((lp         ?? 0) * 100) / 100,
-      d: Math.round((today      ?? 0) * 100) / 100,
-      e: Math.floor(executions  ?? 0),
-      w: Math.floor(wins        ?? 0),
-      t: Math.floor(Date.now()  / 1000),
+      a: Math.round((allTime   ?? 0) * 100) / 100,
+      l: Math.round((lp        ?? 0) * 100) / 100,
+      d: Math.round((today     ?? 0) * 100) / 100,
+      e: Math.floor(executions ?? 0),
+      w: Math.floor(wins       ?? 0),
+      t: Math.floor(Date.now() / 1000),
     }), 'utf8')
   } catch {}
 }
@@ -390,31 +362,21 @@ export function loadRevenue() {
     const path = f('revenue.json')
     if (!existsSync(path)) return {}
     const d    = JSON.parse(readFileSync(path, 'utf8'))
-    return {
-      allTime:    d.a ?? 0,
-      lp:         d.l ?? 0,
-      today:      d.d ?? 0,
-      executions: d.e ?? 0,
-      wins:       d.w ?? 0,
-      savedAt:    d.t ?? 0,
-    }
+    return { allTime:d.a??0, lp:d.l??0, today:d.d??0, executions:d.e??0, wins:d.w??0, savedAt:d.t??0 }
   } catch { return {} }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 7 — CONTRACT ADDRESSES
+// SECTION 7 — CONTRACTS
 // ═══════════════════════════════════════════════════════════════════════════
 export function saveContracts(addrs) {
-  if (!_writable || !addrs || typeof addrs !== 'object') return
+  if (!_writable || !addrs) return
   try {
     const clean = {}
-    for (const [k, v] of Object.entries(addrs)) {
+    for (const [k,v] of Object.entries(addrs)) {
       if (v && typeof v === 'string' && v.startsWith('0x')) clean[k] = v
     }
-    writeFileSync(f('contracts.json'), JSON.stringify({
-      ...clean,
-      _ts: Math.floor(Date.now() / 1000),
-    }), 'utf8')
+    writeFileSync(f('contracts.json'), JSON.stringify({...clean,_ts:Math.floor(Date.now()/1000)}), 'utf8')
   } catch {}
 }
 
@@ -424,7 +386,7 @@ export function loadContracts() {
     if (!existsSync(path)) return {}
     const data = JSON.parse(readFileSync(path, 'utf8'))
     const out  = {}
-    for (const [k, v] of Object.entries(data)) {
+    for (const [k,v] of Object.entries(data)) {
       if (k !== '_ts' && typeof v === 'string' && v.startsWith('0x')) out[k] = v
     }
     return out
@@ -448,7 +410,7 @@ export function loadSwapCount() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 9 — SDAL PERSISTENCE
+// SECTION 9 — SDAL
 // ═══════════════════════════════════════════════════════════════════════════
 export function saveSDAL(sdalObj) {
   if (!_writable || !sdalObj) return
@@ -469,10 +431,7 @@ export function loadSDAL() {
 export function saveGasPrices(prices) {
   if (!_writable || !prices) return
   try {
-    writeFileSync(f('gas.json'), JSON.stringify({
-      ...prices,
-      _ts: Math.floor(Date.now() / 1000),
-    }), 'utf8')
+    writeFileSync(f('gas.json'), JSON.stringify({...prices,_ts:Math.floor(Date.now()/1000)}), 'utf8')
   } catch {}
 }
 
@@ -482,7 +441,7 @@ export function loadGasPrices() {
     if (!existsSync(path)) return {}
     const d   = JSON.parse(readFileSync(path, 'utf8'))
     const out = {}
-    for (const [k, v] of Object.entries(d)) {
+    for (const [k,v] of Object.entries(d)) {
       if (k !== '_ts' && typeof v === 'number' && v > 0) out[k] = v
     }
     return out
@@ -490,9 +449,7 @@ export function loadGasPrices() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 11 — PROCESS START TIME
-// Written ONCE on first boot. Never overwritten on restart.
-// dashboard.js reads this for true container uptime.
+// SECTION 11 — PROCESS START TIME (dashboard.js true uptime)
 // ═══════════════════════════════════════════════════════════════════════════
 export function saveProcessStart(ts) {
   if (!_writable) return
@@ -509,10 +466,9 @@ export function loadProcessStart() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 12 — AUDIT LOG
-// Append-only. Never read into memory. Max 2MB then rotates.
+// SECTION 12 — AUDIT LOG (2MB cap, rotate on overflow)
 // ═══════════════════════════════════════════════════════════════════════════
-const AUDIT_MAX = 2 * MB
+const AUDIT_MAX  = 2 * MB
 let   _auditSize = 0
 
 export function audit(msg) {
@@ -539,32 +495,30 @@ export function dbHealth() {
     'process_start.txt','audit.log',
     ...OVERLAY_CHAINS.map(n => 'ovl_' + n + '.json'),
   ]
-  let   totalBytes = 0
-  const status     = {}
+  let totalBytes = 0
+  const status   = {}
   for (const name of FILES) {
     try {
       const fp = f(name)
       if (existsSync(fp)) {
-        const s  = statSync(fp)
+        const s = statSync(fp)
         status[name] = { size:s.size, ageS:Math.floor((Date.now()-s.mtimeMs)/1000) }
         totalBytes  += s.size
       }
     } catch {}
   }
-
   let overlayTotal = 0
   try {
     const idx = JSON.parse(readFileSync(f('ovl_index.json'), 'utf8'))
     overlayTotal = idx.total ?? 0
   } catch {}
-
   const mem = process.memoryUsage()
   return {
     mounted:       _mounted,
     writable:      _writable,
     root:          _root,
     totalBytes,
-    totalMB:       (totalBytes / MB).toFixed(2),
+    totalMB:       (totalBytes/MB).toFixed(2),
     overlayOnDisk: overlayTotal,
     overlayCaps:   { disk:OVERLAY_DISK_CAP, ram:OVERLAY_RAM_CAP },
     memory: {
@@ -574,6 +528,7 @@ export function dbHealth() {
       peakMB:      _peakHeapMB,
       gcCount:     _gcCount,
       warnCount:   _warnCount,
+      gcThresholds:{ gc:HEAP_GC_MB, warn:HEAP_WARN_MB, crit:HEAP_CRIT_MB },
       status:      _peakHeapMB > HEAP_CRIT_MB ? 'CRITICAL'
                  : _peakHeapMB > HEAP_WARN_MB ? 'ELEVATED' : 'OK',
     },
@@ -586,12 +541,10 @@ export function dbHealth() {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SECTION 14 — INIT
-// Called by index.js as step 0, before everything else.
 // ═══════════════════════════════════════════════════════════════════════════
 export function initDB() {
   detectVolume()
 
-  // Size check for audit log rotation
   try {
     const ap = f('audit.log')
     if (existsSync(ap)) _auditSize = statSync(ap).size
@@ -599,12 +552,11 @@ export function initDB() {
 
   audit(`BOOT pid=${process.pid} node=${process.version}`)
 
-  // Write process start on first boot only
+  // Write process start time on first boot only — never overwrite
   if (!existsSync(f('process_start.txt'))) {
     saveProcessStart(Date.now())
   }
 
-  // Gather boot stats
   let overlayTotal = 0
   try {
     const idx = JSON.parse(readFileSync(f('ovl_index.json'), 'utf8'))
@@ -618,19 +570,17 @@ export function initDB() {
 
   console.log(`[DB] Volume: ${_root} — ${health.totalMB}MB stored`)
   console.log(`[DB] Caps: ${OVERLAY_DISK_CAP.toLocaleString()} disk · ${OVERLAY_RAM_CAP.toLocaleString()} RAM · ~${Math.round(OVERLAY_DISK_CAP*80/MB)}MB max`)
-
   if (overlayTotal > 0)
     console.log(`[DB] Overlay: ${overlayTotal.toLocaleString()} entries on disk`)
   if (Object.keys(contracts).length > 0)
     console.log(`[DB] Contracts: ${Object.keys(contracts).length} chains`)
   if (revenue.allTime > 0)
-    console.log(`[DB] Revenue: ${revenue.allTime >= 1e9 ? '$'+(revenue.allTime/1e9).toFixed(2)+'B' : '$'+(revenue.allTime/1e6).toFixed(2)+'M'} all-time`)
+    console.log(`[DB] Revenue: ${revenue.allTime>=1e9?'$'+(revenue.allTime/1e9).toFixed(2)+'B':'$'+(revenue.allTime/1e6).toFixed(2)+'M'} all-time`)
   if (swaps > 0)
     console.log(`[DB] Swaps: ${swaps.toLocaleString()} restored`)
   if (!_mounted)
     console.warn('[DB] /data not a Railway volume — add one for persistence')
 
-  // START MEMORY GOVERNOR — keeps heap under 320MB for the entire lifetime
   startMemoryGovernor()
 
   return health
